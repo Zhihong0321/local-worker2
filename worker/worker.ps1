@@ -215,7 +215,8 @@ function Get-ListPage([string]$Query, [double]$Lat, [double]$Lon, [int]$Offset) 
   $items = At $data @(0, 1)
   $rows = New-Object System.Collections.ArrayList
   if ($null -eq $items) { return @() }
-  for ($i = 1; $i -lt $items.Count; $i++) {
+  # From 0: a query that matches one place puts that place at 0; a list starts with a header, which has no name and is skipped below.
+  for ($i = 0; $i -lt $items.Count; $i++) {
     $b = At $items[$i] @(14)
     if ($null -eq $b) { continue }
     $name = Text (At $b @(11))
