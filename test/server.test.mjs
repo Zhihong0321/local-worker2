@@ -18,6 +18,13 @@ test('health is open, everything else needs a key', async () => {
   assert.equal((await call('/api/workers', {})).status, 401);
 });
 
+test('the API page is open and describes the scan route', async () => {
+  const r = await call('/docs', {});
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get('content-type'), /text\/html/);
+  assert.match(await r.text(), /\/api\/scan/);
+});
+
 test('a worker key reaches only the worker routes', async () => {
   assert.equal((await call('/api/workers', wk)).status, 403);
   assert.equal((await call('/api/worker/strategy', wk)).status, 200);

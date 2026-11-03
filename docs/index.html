@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local Gmap Worker API</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1d1f23; --muted: #5d6470; --line: #e2e5ea;
+    --code-bg: #f4f6f8; --accent: #1f6feb; --tag: #e8f0fe; --tag-fg: #174ea6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1216; --fg: #e6e9ee; --muted: #9aa3af; --line: #2a3038;
+      --code-bg: #1a1f26; --accent: #6ea8ff; --tag: #1b2a44; --tag-fg: #9cc3ff;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1216; --fg: #e6e9ee; --muted: #9aa3af; --line: #2a3038;
+    --code-bg: #1a1f26; --accent: #6ea8ff; --tag: #1b2a44; --tag-fg: #9cc3ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 880px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 20px; margin: 40px 0 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+  h3 { font-size: 16px; margin: 24px 0 8px; }
+  p, li { margin: 8px 0; }
+  .lead { color: var(--muted); margin-top: 0; }
+  code { font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--code-bg); padding: 12px 14px; border-radius: 8px; overflow-x: auto; }
+  pre code { background: none; padding: 0; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  .ep { display: inline-block; font: 600 12px ui-monospace, Consolas, monospace; padding: 2px 8px; border-radius: 4px; background: var(--tag); color: var(--tag-fg); margin-right: 8px; }
+  .path { font: 14px ui-monospace, Consolas, monospace; word-break: break-all; }
+  .note { border-left: 3px solid var(--accent); padding: 4px 12px; color: var(--muted); }
+  nav a { color: var(--accent); text-decoration: none; margin-right: 14px; font-size: 14px; }
+  a { color: var(--accent); }
+  @media (max-width: 480px) { main { padding: 24px 16px 48px; } th, td { padding: 6px; } }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Local Gmap Worker API</h1>
+<p class="lead">Google Maps business scans as an API. Scans are run by Windows PCs on their own internet line and posted back here.</p>
+<nav>
+  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
+</nav>
+
+<h2 id="base">Base URL</h2>
+<p>All paths below are relative to this service:</p>
+<pre><code>https://YOUR-SERVICE</code></pre>
+<p class="note">Health is open. Every other route needs your API key.</p>
+
+<h2 id="auth">Auth</h2>
+<p>Send your API key on every request except <code>/health</code> and <code>/docs</code>:</p>
+<pre><code>Authorization: Bearer &lt;API_KEY&gt;</code></pre>
+<p><code>x-api-key: &lt;API_KEY&gt;</code> works too. A missing or wrong key returns <code>401</code>.</p>
+
+<h2 id="scan">Start a scan</h2>
+<p><span class="ep">POST</span><span class="path">/api/scan</span></p>
+<pre><code>curl -X POST https://YOUR-SERVICE/api/scan \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"keyword":"factory","place":"Taman Daya","max":200,"wait":600}'</code></pre>
+<table>
+  <tr><th>Field</th><th>Meaning</th></tr>
+  <tr><td><code>keyword</code></td><td>Business type. <code>business</code>, <code>factory</code> or <code>shop</code> with a <code>place</code> sweeps that family's words. Any other keyword is one plain search, up to 300 results.</td></tr>
+  <tr><td><code>place</code></td><td>Area, e.g. <code>Taman Daya</code>. At least one of <code>keyword</code> or <code>place</code> is required.</td></tr>
+  <tr><td><code>max</code></td><td>Results to return, 1 to 500. Default 200.</td></tr>
+  <tr><td><code>wait</code></td><td>Seconds to hold the request open for the result, up to 900. Without it you get <code>202</code> at once.</td></tr>
+  <tr><td><code>timeoutMs</code></td><td>Scan deadline, 120000 to 1800000. Default 600000. At the deadline the worker posts what it has.</td></tr>
+  <tr><td><code>searchMode</code></td><td><code>"location_only"</code> searches the place alone.</td></tr>
+  <tr><td><code>worker</code></td><td>Pin the scan to one worker by name.</td></tr>
+</table>
+<p><code>200</code> with <code>{ "job": ... }</code> when the scan finished within <code>wait</code>. <code>202</code> with the job while it is still running. <code>400</code> for invalid input, with an <code>error</code> message.</p>
+
+<h2 id="get">Get, cancel and list scans</h2>
+<h3><span class="ep">GET</span><span class="path">/api/scan/{id}?wait=60</span></h3>
+<p>Returns the job. <code>wait</code> holds the request until it finishes, up to 900 seconds. <code>404</code> for an unknown id.</p>
+<h3><span class="ep">DELETE</span><span class="path">/api/scan/{id}</span></h3>
+<p>Cancels the job. <code>409</code> if it has already finished.</p>
+<h3><span class="ep">GET</span><span class="path">/api/scans?status=running</span></h3>
+<p>Recent jobs, up to 200, without results. <code>status</code> is optional: <code>pending</code>, <code>running</code>, <code>done</code> or <code>failed</code>.</p>
+
+<h2 id="other">Other routes</h2>
+<table>
+  <tr><th>Route</th><th>What it does</th></tr>
+  <tr><td><span class="ep">GET</span><span class="path">/health</span></td><td>Open. Returns <code>{ "ok": true, "workersLive": n }</code>. <code>workersLive</code> is how many PC workers are connected.</td></tr>
+  <tr><td><span class="ep">GET</span><span class="path">/api/workers</span></td><td>Every worker seen: <code>name</code>, <code>live</code>, current <code>job</code>, <code>done</code>, <code>failed</code>, and <code>coolUntil</code> if Google is resting it.</td></tr>
+  <tr><td><span class="ep">GET</span><span class="path">/api/worker/package</span></td><td>The Windows worker as a zip. Unzip it on a PC and double-click <code>Start Local Gmap Worker.cmd</code>. Its key only claims and answers scans.</td></tr>
+  <tr><td><span class="ep">GET</span><span class="path">/docs</span></td><td>This page. Open, no key.</td></tr>
+</table>
+
+<h2 id="job">Job object</h2>
+<pre><code>{
+  "id": "857ccca76cfe",
+  "status": "done",          // pending | running | done | failed
+  "worker": "pc-desktop-camhl16",
+  "attempts": 1,
+  "createdAt": "...", "startedAt": "...", "finishedAt": "...",
+  "payload": { "keyword": "cafe", "place": "Taman Daya", "max": 5 },
+  "result": {
+    "query": "cafe in Taman Daya",
+    "found": 5,
+    "capped": true,            // true: there were at least max results
+    "businesses": [
+      { "name": "...", "rating": 4.9, "reviews": 3243, "category": "Restaurant",
+        "address": "...", "phone": "...", "website": "...",
+        "mapsUrl": "...", "place_id": "..." }
+    ],
+    "googleRequests": 1,
+    "stoppedEarly": null,      // set when Google refused the worker's line
+    "tookMs": 2337,
+    "worker": "pc-desktop-camhl16"
+  },
+  "error": null                // set when status is failed
+}</code></pre>
+<p><code>result</code> is set once the job is done. <code>error</code> is set if it failed.</p>
+
+<h2 id="behaviour">Behaviour</h2>
+<ul>
+  <li><strong>No worker free.</strong> A job waits in the queue. After 30 minutes with no worker, it fails.</li>
+  <li><strong>Lost worker.</strong> A job whose worker stops responding goes back to the queue. After 3 lost workers it fails.</li>
+  <li><strong>Google refusal.</strong> The worker posts what it has and rests for 30 minutes. The service sends it no jobs meanwhile.</li>
+  <li><strong>Restart.</strong> The queue is held in memory. A redeploy drops pending scans. A scan already running is re-filed when its worker posts the result.</li>
+</ul>
+
+<h2 id="example">Example: a complete round trip</h2>
+<pre><code># 1. start the scan, waiting up to 10 minutes
+curl -X POST https://YOUR-SERVICE/api/scan \
+  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+  -d '{"keyword":"factory","place":"Taman Daya","max":200,"wait":600}'
+
+# 2. if the answer was 202, poll until it finishes
+curl -H "Authorization: Bearer $API_KEY" \
+  "https://YOUR-SERVICE/api/scan/&lt;id&gt;?wait=60"</code></pre>
+
+</main>
+<script>
+  // Show code samples against the address this page was opened from.
+  for (const el of document.querySelectorAll('pre, code')) {
+    el.textContent = el.textContent.split('https://YOUR-SERVICE').join(location.origin);
+  }
+</script>
+</body>
+</html>

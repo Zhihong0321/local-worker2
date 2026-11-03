@@ -12,6 +12,8 @@
 // longer knows is filed again as done, so a caller polling that id still gets it.
 import http from 'node:http';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { strategy, DEFAULT_MAX, MAX_LIMIT } from './strategy.mjs';
 import { packageZip, PACKAGE_NAME } from './package.mjs';
@@ -34,6 +36,8 @@ const MAX_WAIT_MS = 25_000;
 /** Longest a caller's request is held open waiting for a scan. */
 const MAX_CALLER_WAIT_MS = 900_000;
 const KEEP_FINISHED = 1000;
+/** The API page: no secrets in it, so it is served without a key. */
+const DOCS_PAGE = fs.readFileSync(path.resolve(import.meta.dirname, 'docs', 'index.html'));
 const WORKER_LIVE_MS = 90_000;
 
 export function workerKey(token = API_KEY) {
@@ -263,6 +267,12 @@ async function route(req, res) {
 
   if (method === 'GET' && (p === '/' || p === '/health')) {
     json(res, 200, { ok: true, service: 'local-gmap-worker', workersLive: liveWorkers().filter((w) => w.live).length });
+    return;
+  }
+
+  if (method === 'GET' && (p === '/docs' || p === '/docs/')) {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': DOCS_PAGE.length, 'cache-control': 'no-cache' });
+    res.end(DOCS_PAGE);
     return;
   }
 
