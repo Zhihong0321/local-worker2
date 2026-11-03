@@ -1,0 +1,13 @@
+{
+  "name": "local-gmap-worker",
+  "version": "1.0.0",
+  "description": "Google Maps scans as an API, answered by Windows PCs on their own internet line",
+  "type": "module",
+  "private": true,
+  "main": "server.mjs",
+  "engines": { "node": ">=22.2" },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}

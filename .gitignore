@@ -1,0 +1,4 @@
+node_modules/
+worker.env
+*.zip
+.env
