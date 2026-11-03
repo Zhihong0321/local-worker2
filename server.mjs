@@ -151,12 +151,18 @@ function readScan(body) {
   return { payload, timeoutMs };
 }
 
-function create(payload, timeoutMs, id = newId()) {
+/** Adds a job to the queue without offering it to a waiting worker. */
+function add(payload, timeoutMs, id = newId()) {
   const job = {
     id, type: JOB_TYPE, payload, timeoutMs, status: 'pending', worker: null, attempts: 0,
     createdAt: now(), startedAt: null, finishedAt: null, leaseUntil: null, result: null, error: null,
   };
   jobs.set(id, job);
+  return job;
+}
+
+function create(payload, timeoutMs, id = newId()) {
+  const job = add(payload, timeoutMs, id);
   wake(job);
   return job;
 }
@@ -312,7 +318,8 @@ async function route(req, res) {
     if (!job) {
       // Lost to a restart: file it again under the same id.
       if (!body.payload || typeof body.payload !== 'object') { json(res, 404, { error: 'no such job' }); return; }
-      job = create({ ...body.payload }, DEFAULT_TIMEOUT_MS, id);
+      // Not create(): a waiting worker must not be handed a job this one is about to finish.
+      job = add({ ...body.payload }, DEFAULT_TIMEOUT_MS, id);
       lease(job, worker);
     }
     if (job.status === 'done' || job.status === 'failed') { json(res, 409, { error: `job is already ${job.status}` }); return; }

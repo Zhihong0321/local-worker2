@@ -404,6 +404,8 @@ function Send-Result([string]$Id, $Payload, [bool]$Ok, $Result, [string]$ErrorTe
     try {
       $r = Invoke-Hub 'POST' "/api/jobs/$Id/result" $body 120
       if ($r.status -eq 200) { return }
+      # The service has already settled this job (cancelled, or finished elsewhere): a copy would never be taken.
+      if ($r.status -eq 409) { Log "  job $Id is already settled by the service; not kept"; return }
       Log "  the service answered HTTP $($r.status) to the result: $($r.body)"
       if ($r.status -in 400, 403, 404, 409) { break }
     } catch { Log "  could not post the result: $($_.Exception.Message)" }

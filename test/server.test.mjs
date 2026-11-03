@@ -45,6 +45,19 @@ test('a result for a job lost to a restart is filed again', async () => {
   assert.equal(job.status, 'done');
 });
 
+test('a result for a lost job is not handed to a worker already waiting', async () => {
+  const waiting = call('/api/jobs/next?worker=pc-idle&wait=3', wk);
+  await new Promise((r) => setTimeout(r, 200));
+  const id = 'fedcba654321';
+  const body = { worker: 'pc-test', ok: true, result: { found: 0, businesses: [] }, payload: { keyword: 'shop', place: 'W', max: 5 } };
+  assert.equal((await call(`/api/jobs/${id}/result`, wk, { method: 'POST', body: JSON.stringify(body) })).status, 200);
+  assert.equal((await waiting).status, 204);
+  const { job } = await (await call(`/api/scan/${id}`, api)).json();
+  assert.equal(job.status, 'done');
+  assert.equal(job.attempts, 1);
+  assert.equal(job.worker, 'pc-test');
+});
+
 test('retryAfterMs rests the worker', async () => {
   const posted = await (await call('/api/scan', api, { method: 'POST', body: JSON.stringify({ keyword: 'cafe', place: 'Y' }) })).json();
   const { job } = await (await call('/api/jobs/next?worker=pc-rest&wait=1', wk)).json();
