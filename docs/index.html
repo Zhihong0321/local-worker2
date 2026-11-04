@@ -101,9 +101,10 @@
 <pre><code>{ "url": "...", "finalUrl": "...",   // finalUrl after redirects
   "status": 200, "contentType": "text/html", "title": "...",
   "format": "markdown", "content": "# ...", "length": 14832,
-  "truncated": false,                // true past 5 MB of page
+  "truncated": false,                // true past 5 MB of page, or PDF pages left out
   "provider": "scrapling-local", "tookMs": 1079, "worker": "pc-..." }</code></pre>
-<p>A site answering HTTP 400 or above, a non-page file (PDF, image) or a refused address fails the job with an <code>error</code>. Plain text and JSON come back as they are. Pages are read without a browser, so content drawn only by JavaScript is not there.</p>
+<p><strong>PDFs</strong> come back as markdown, tables as markdown tables (<code>format: "text"</code> gives plain text). A PDF reads at about 1.2 s a page: past the fetch's deadline it returns the pages it has with <code>truncated: true</code>, so send a larger <code>timeoutMs</code> for long ones. Limits: 30 MB and 300 pages. Scanned PDFs without a text layer come back nearly empty.</p>
+<p>A site answering HTTP 400 or above, another kind of file (image, Word) or a refused address fails the job with an <code>error</code>. Plain text and JSON come back as they are. Pages are read without a browser, so content drawn only by JavaScript is not there.</p>
 
 <h2 id="get">Get, cancel and list jobs</h2>
 <h3><span class="ep">GET</span><span class="path">/api/scan/{id}?wait=60</span></h3>

@@ -94,8 +94,10 @@ the same call unless `wait` says otherwise.
 - `worker`: pin it to one worker.
 
 `result`: `{ url, finalUrl, status, contentType, title, format, content,
-length, truncated, provider: "scrapling-local", tookMs, worker }`. HTTP 400+,
-a non-page file or a private address fails the job. No browser, so content
+length, truncated, provider: "scrapling-local", tookMs, worker }`. PDFs come
+back as markdown with tables (pymupdf4llm), about 1.2 s a page; past the
+deadline the pages read so far, `truncated: true`. Limits 30 MB, 300 pages, no
+OCR. HTTP 400+, another kind of file or a private address fails the job. No browser, so content
 only JavaScript draws is missing.
 
 **`GET /api/scan/:id?wait=60`** — the job; `wait` holds until it finishes
@@ -119,7 +121,10 @@ only JavaScript draws is missing.
   offered again on the worker's next start.
 - **Fetches.** The worker sets up its own Python 3.12 (embeddable build) and
   `scrapling`, `curl_cffi`, `markdownify` under `%LOCALAPPDATA%\LocalGmapWorker\python`
-  on first start, about 60 MB from python.org and PyPI (40 s on 2026-11-04).
+  on first start, about 60 MB from python.org and PyPI (40 s on 2026-11-04),
+  then the PDF reader (`pymupdf4llm`, about 245 MB, 75 s) as its own step: if
+  only that fails, web pages still work and PDF jobs fail until it is retried.
+  pymupdf4llm is AGPL-3.0 (Artifex sells a commercial licence).
   Until that works (retried hourly) it takes scans only. Each hop of a fetch,
   redirects included, must resolve to a public address, so a caller cannot
   reach the PC's LAN. `WEB_FETCH=off` in `worker.env` keeps a PC to scans.

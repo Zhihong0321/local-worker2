@@ -7,8 +7,13 @@
 # Convertor for markdown. Fetcher itself is not imported: it pulls in
 # patchright, 109 MB of browser driver this never uses.
 #
+# PDFs go to pymupdf4llm, which writes their tables as markdown tables. The
+# worker installs it separately, after the page reader, so a PDF can fail
+# with "still being set up" on a PC that has just started.
+#
 # The URL comes from an API caller and this runs inside someone's home or
 # office, so every hop, redirects included, must resolve to a public address.
+import contextlib
 import ipaddress
 import json
 import re
@@ -23,6 +28,10 @@ from scrapling.core.shell import Convertor
 from scrapling.parser import Selector
 
 MAX_BYTES = 5 * 1024 * 1024
+# A PDF cut short does not open, so it may be bigger; past this it fails whole.
+MAX_PDF_BYTES = 30 * 1024 * 1024
+MAX_PDF_PAGES = 300
+PDF_BATCH = 5
 MAX_REDIRECTS = 5
 # Page chrome a reader leaves out, like Jina Reader and Tavily extract do.
 CHROME_TAGS = ('nav', 'header', 'footer', 'aside', 'form', 'iframe', 'dialog')
@@ -83,6 +92,43 @@ def main_part(page):
     return Selector(root=root, url=page.url)
 
 
+def is_pdf(ctype, raw):
+    return ctype in ('application/pdf', 'application/x-pdf') or raw[:5] == b'%PDF-'
+
+
+def read_pdf(raw, fmt, deadline):
+    """PDF to markdown with pymupdf4llm (tables as markdown tables), or plain text.
+    Returns (title, content, cut): cut when pages were left out for the page cap or the deadline."""
+    try:
+        import pymupdf
+        import pymupdf4llm
+    except ImportError:
+        raise Refused('this worker cannot read PDFs yet: its PDF reader is still being set up')
+    try:
+        doc = pymupdf.open(stream=raw, filetype='pdf')
+    except Exception as e:
+        raise Refused(f'the PDF does not open ({e})')
+    if doc.needs_pass:
+        raise Refused('the PDF is password protected')
+    title = ((doc.metadata or {}).get('title') or '').strip() or None
+    last = min(doc.page_count, MAX_PDF_PAGES)
+    parts, done = [], 0
+    # pymupdf4llm prints its notices to stdout, which carries this script's answer.
+    with contextlib.redirect_stdout(sys.stderr):
+        if fmt == 'text':
+            parts = [doc[i].get_text() for i in range(last)]
+            done = last
+        else:
+            # About 1.2 s a page on 2026-11-04: a long PDF stops at the deadline with the pages it has.
+            while done < last and time.time() < deadline:
+                batch = list(range(done, min(done + PDF_BATCH, last)))
+                parts.append(pymupdf4llm.to_markdown(doc, pages=batch))
+                done = batch[-1] + 1
+    if not done:
+        raise Refused('no time left to read the PDF; send a longer timeoutMs')
+    return title, '\n\n'.join(parts).strip(), done < doc.page_count
+
+
 def fetch(job):
     url = str(job.get('url') or '').strip()
     fmt = job.get('format') or 'markdown'
@@ -103,26 +149,34 @@ def fetch(job):
     else:
         raise Refused(f'more than {MAX_REDIRECTS} redirects')
 
+    ctype = (r.headers.get('content-type') or '').split(';')[0].strip().lower()
+    limit = MAX_PDF_BYTES if is_pdf(ctype, b'') or url.lower().split('?')[0].endswith('.pdf') else MAX_BYTES
     chunks, size, truncated = [], 0, False
     for chunk in r.iter_content():
         chunks.append(chunk)
         size += len(chunk)
-        if size >= MAX_BYTES:
+        if size >= limit:
             truncated = True
             break
         if time.time() > deadline:
             raise Refused('the site was too slow to send the page')
     r.close()
-    raw = b''.join(chunks)[:MAX_BYTES]
+    raw = b''.join(chunks)[:limit]
     if r.status_code >= 400:
         raise Refused(f'the site answered HTTP {r.status_code}')
 
-    ctype = (r.headers.get('content-type') or '').split(';')[0].strip().lower()
-    text = raw.decode(charset(r, raw[:4096]), errors='replace')
     title = None
-    if ctype in TEXT_TYPES:
-        content = text
+    out_fmt = fmt
+    if is_pdf(ctype, raw):
+        if truncated:
+            raise Refused(f'the PDF is over {MAX_PDF_BYTES // (1024 * 1024)} MB')
+        title, content, truncated = read_pdf(raw, fmt, deadline)
+        out_fmt = 'text' if fmt == 'text' else 'markdown'
+    elif ctype in TEXT_TYPES:
+        content = raw.decode(charset(r, raw[:4096]), errors='replace')
+        out_fmt = 'text'
     elif ctype in ('', 'text/html', 'application/xhtml+xml'):
+        text = raw.decode(charset(r, raw[:4096]), errors='replace')
         page = Selector(content=text, url=url)
         title = page.css('title::text').get()
         title = str(title).strip() if title else None
@@ -136,7 +190,7 @@ def fetch(job):
 
     return {
         'url': job.get('url'), 'finalUrl': url, 'status': r.status_code, 'contentType': ctype or None,
-        'title': title, 'format': fmt if ctype not in TEXT_TYPES else 'text', 'content': content,
+        'title': title, 'format': out_fmt, 'content': content,
         'length': len(content), 'truncated': truncated, 'provider': 'scrapling-local',
         'tookMs': int((time.time() - started) * 1000),
     }

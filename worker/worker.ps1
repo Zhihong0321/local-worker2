@@ -429,6 +429,12 @@ $FetchPackages = @('scrapling==0.5', 'curl_cffi==0.17.0', 'markdownify==1.2.3')
 $FetchStamp = Join-Path $PyDir 'installed.txt'
 $script:FetchReady = $false
 $script:NextSetup = Get-Date
+# The PDF reader, on its own: about 245 MB (PyMuPDF and its layout model), so a
+# failure here leaves web pages working.
+$PdfPackages = @('pymupdf4llm==2.1', 'pymupdf==2.1', 'pymupdf_layout==2.1')
+$PdfStamp = Join-Path $PyDir 'pdf-installed.txt'
+$script:PdfReady = $false
+$script:NextPdfSetup = Get-Date
 
 # Python's embeddable build and the fetch packages, once. False if it failed;
 # the worker then takes scans only and tries again in an hour.
@@ -464,6 +470,26 @@ function Install-Fetcher {
   }
 }
 
+# pymupdf4llm into the same Python, once page fetching works. Until then a PDF
+# job fails with "still being set up".
+function Install-PdfReader {
+  $want = $PdfPackages -join ' '
+  if ((Test-Path $PdfStamp) -and ([IO.File]::ReadAllText($PdfStamp).Trim() -eq $want)) { return $true }
+  Log 'setting up PDF reading: PyMuPDF, about 245 MB, once'
+  try {
+    & $PyExe -m pip install --quiet --disable-pip-version-check --no-warn-script-location @PdfPackages
+    if ($LASTEXITCODE) { throw "pip exited $LASTEXITCODE" }
+    & $PyExe -I -c 'import pymupdf, pymupdf4llm'
+    if ($LASTEXITCODE) { throw 'the packages installed but do not load' }
+    [IO.File]::WriteAllText($PdfStamp, $want)
+    Log 'PDF reading is ready'
+    return $true
+  } catch {
+    Log "PDF reading is off for now: setup failed ($($_.Exception.Message)). Trying again in an hour."
+    return $false
+  }
+}
+
 # One web.fetch job, by fetch.py in its own process; it gets the payload in a
 # file and prints one JSON line.
 function Invoke-Fetch($Job) {
@@ -488,7 +514,8 @@ function Invoke-Fetch($Job) {
       throw "the page took longer than $([int]($Job.timeoutMs / 1000)) s"
     }
     $proc.WaitForExit()
-    $line = $out.Result.Trim()
+    # The answer is the last line: a library that prints to stdout must not break it.
+    $line = @($out.Result.Trim() -split "`r?`n")[-1]
     if (-not $line) { throw "fetch.py answered nothing: $($err.Result.Trim())" }
     $r = $line | ConvertFrom-Json
     if (-not $r.ok) { throw [string]$r.error }
@@ -560,6 +587,10 @@ while ($true) {
     if ($FetchOn -and -not $script:FetchReady -and (Get-Date) -ge $script:NextSetup) {
       $script:FetchReady = Install-Fetcher
       $script:NextSetup = (Get-Date).AddHours(1)
+    }
+    if ($script:FetchReady -and -not $script:PdfReady -and (Get-Date) -ge $script:NextPdfSetup) {
+      $script:PdfReady = Install-PdfReader
+      $script:NextPdfSetup = (Get-Date).AddHours(1)
     }
     $resting = (Get-Date) -lt $restUntil
     $script:Types = (@($(if (-not $resting) { 'gmap.scan' }), $(if ($script:FetchReady) { 'web.fetch' })) | Where-Object { $_ }) -join ','
