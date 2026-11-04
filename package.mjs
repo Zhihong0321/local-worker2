@@ -14,6 +14,7 @@ const FILES = [
   ['Disable autostart.cmd', 'Disable autostart.cmd'],
   ['README.txt', 'README.txt'],
   ['worker.ps1', 'app/worker.ps1'],
+  ['fetch.py', 'app/fetch.py'],
 ];
 
 const DOS_EPOCH = { time: 0, date: (2026 - 1980) << 9 | 1 << 5 | 1 };
@@ -79,6 +80,7 @@ export function packageZip(hubUrl, workerKey, dir = DIR) {
     'WORKER_KEY=' + workerKey,
     '# WORKER_NAME=pc-office-1',
     '# GMAP_PACE_MS=500',
+    '# WEB_FETCH=off',
     '',
   ].join('\n');
   const entries = FILES.map(([from, to]) => ({ name: 'LocalGmapWorker/' + to, data: forWindows(to, fs.readFileSync(path.join(dir, from))) }));

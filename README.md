@@ -1,9 +1,11 @@
 # Local Gmap Worker
 
-Google Maps scans as an API. The service is a small job queue (one Node file, no
-dependencies) that runs on Railway. Windows PCs running the worker claim each
-scan, read the businesses from Google Maps' own result-list pages on the PC's
-own internet line (no browser, almost no RAM), and post them back.
+Google Maps scans and web page reads as an API. The service is a small job
+queue (one Node file, no dependencies) that runs on Railway. Windows PCs running
+the worker claim each job and run it on the PC's own internet line: a scan reads
+the businesses from Google Maps' own result-list pages (no browser, almost no
+RAM); a fetch reads one page and returns it as markdown, in place of Jina Reader
+or Tavily extract.
 
 Forked on 2026-11-03 from `agy-lab/local-worker` + `agy-lab/src/gmap-worker.ts`
 in automation-tools (the EE Auto hub's Gmap Local Worker).
@@ -21,6 +23,7 @@ caller ──POST /api/scan──▶  service (Railway)  ◀──GET /api/jobs/
 | `strategy.mjs` | The sweep words each worker reads per job (business / factory / shop families, street forms) |
 | `package.mjs` | Builds `LocalGmapWorker.zip` with a ready `worker.env` |
 | `worker/worker.ps1` | The PC worker, Windows PowerShell 5.1, nothing to install |
+| `worker/fetch.py` | One page fetch: curl_cffi (Chrome's TLS fingerprint) + Scrapling's parser and markdown, no browser |
 | `worker/*.cmd` | Start, enable / disable autostart |
 | `test/server.test.mjs` | Round trip over HTTP with a pretend worker (`npm test`) |
 
@@ -74,16 +77,39 @@ Answer: `{ job }` with `id`, `status` (`pending`, `running`, `done`,
   "googleRequests": 128, "stoppedEarly": null, "tookMs": 162000, "worker": "pc-office-1" }
 ```
 
-**`GET /api/scan/:id?wait=60`** — the job; `wait` holds until it finishes.
+**`POST /api/fetch`** — read one page on a worker PC. Answers with the page in
+the same call unless `wait` says otherwise.
+
+```json
+{ "url": "https://example.com/article", "format": "markdown" }
+```
+
+- `format`: `markdown` (default), `text` or `html`.
+- `mainContent`: default `true`: the page's `<main>`/`<article>` when it holds
+  most of the text, without nav, header, footer, scripts and hidden elements.
+- `wait`: seconds to hold the request; default the timeout + 30 s; `0` answers
+  `202` at once.
+- `timeoutMs`: 10000–300000, default 60000. A fetch no worker claims in that
+  time fails.
+- `worker`: pin it to one worker.
+
+`result`: `{ url, finalUrl, status, contentType, title, format, content,
+length, truncated, provider: "scrapling-local", tookMs, worker }`. HTTP 400+,
+a non-page file or a private address fails the job. No browser, so content
+only JavaScript draws is missing.
+
+**`GET /api/scan/:id?wait=60`** — the job; `wait` holds until it finishes
+(`/api/fetch/:id` is the same route).
 **`DELETE /api/scan/:id`** — cancel.
-**`GET /api/scans?status=running`** — recent jobs, without results.
+**`GET /api/scans?status=running&type=web.fetch`** — recent jobs, without results.
 **`GET /api/workers`** — every worker seen: `live`, current `job`, `coolUntil`.
 **`GET /api/worker/package`** — the worker zip.
 
 ## Behaviour worth knowing
 
 - **Google refusal.** On 429 / 403 / captcha the worker posts what it has and
-  sends `retryAfterMs` (30 min); the service gives that worker no jobs meanwhile.
+  sends `retryAfterMs` (30 min); the service gives that worker no scans
+  meanwhile, but it still takes fetches.
 - **Lost workers.** A running job whose lease (deadline + 3 min) runs out goes
   back to the queue; after 3 lost workers it fails.
 - **Restarts.** The queue is in memory, so a redeploy drops pending scans. A
@@ -91,6 +117,12 @@ Answer: `{ job }` with `id`, `status` (`pending`, `running`, `done`,
   the service files it again under the same id. A result the service never
   takes stays on the PC in `%LOCALAPPDATA%\LocalGmapWorker\unsaved\` and is
   offered again on the worker's next start.
+- **Fetches.** The worker sets up its own Python 3.12 (embeddable build) and
+  `scrapling`, `curl_cffi`, `markdownify` under `%LOCALAPPDATA%\LocalGmapWorker\python`
+  on first start, about 60 MB from python.org and PyPI (40 s on 2026-11-04).
+  Until that works (retried hourly) it takes scans only. Each hop of a fetch,
+  redirects included, must resolve to a public address, so a caller cannot
+  reach the PC's LAN. `WEB_FETCH=off` in `worker.env` keeps a PC to scans.
 - **Pace.** 500 ms between Google requests (`GMAP_PACE_MS` in `worker.env`),
   up to 15 pages of 20 per search. Measured 2026-10-29: factory sweep of Taman
   Daya, 818 businesses in 2.7 min from 128 requests.

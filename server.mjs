@@ -1,7 +1,8 @@
-// Local Gmap Worker API service. Callers post a Maps scan; Windows PCs running
-// worker/worker.ps1 claim it, read the businesses from Google Maps on their own
-// internet line, and post them back. Nothing scrapes from here: this is only
-// the queue between the two, so it runs fine on a small Railway service.
+// Local Gmap Worker API service. Callers post a Maps scan or a page fetch;
+// Windows PCs running worker/worker.ps1 claim it, read Google Maps or the page
+// on their own internet line, and post the result back. Nothing scrapes from
+// here: this is only the queue between the two, so it runs fine on a small
+// Railway service.
 //
 // TWO KEYS. Callers hold API_KEY. A worker PC holds WORKER_KEY, an HMAC of
 // API_KEY, which reaches only the claim, heartbeat, result and strategy routes.
@@ -21,13 +22,21 @@ import { packageZip, PACKAGE_NAME } from './package.mjs';
 const API_KEY = process.env.API_KEY ?? '';
 const PORT = Number(process.env.PORT) || 8080;
 const KEY_LABEL = 'local-gmap-worker-v1';
-const JOB_TYPE = 'gmap.scan';
+const SCAN = 'gmap.scan';
+const FETCH = 'web.fetch';
+const JOB_TYPES = [SCAN, FETCH];
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 const MIN_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 1_800_000;
 /** Lease past the job's own deadline: the worker keeps 60 s back to post, plus retries. */
 const LEASE_GRACE_MS = 180_000;
+/** A fetch is one page: seconds, not minutes. */
+const FETCH_DEFAULT_TIMEOUT_MS = 60_000;
+const FETCH_MIN_TIMEOUT_MS = 10_000;
+const FETCH_MAX_TIMEOUT_MS = 300_000;
+const FETCH_LEASE_GRACE_MS = 30_000;
+const FETCH_FORMATS = ['markdown', 'text', 'html'];
 /** A pending job no worker claims within this long fails, so a caller never waits forever. */
 const QUEUE_TIMEOUT_MS = Number(process.env.QUEUE_TIMEOUT_MS) || 1_800_000;
 /** Past this a job is poison, not unlucky: it has lost three workers. */
@@ -96,8 +105,8 @@ function evict() {
   for (const j of finished.slice(0, Math.max(0, finished.length - KEEP_FINISHED))) jobs.delete(j.id);
 }
 
-function claimable(job, worker) {
-  return job.status === 'pending' && (!job.payload.worker || job.payload.worker === worker);
+function claimable(job, worker, types) {
+  return job.status === 'pending' && types.includes(job.type) && (!job.payload.worker || job.payload.worker === worker);
 }
 
 function lease(job, worker) {
@@ -105,7 +114,7 @@ function lease(job, worker) {
   job.worker = worker;
   job.attempts++;
   job.startedAt = now();
-  job.leaseUntil = Date.now() + job.timeoutMs + LEASE_GRACE_MS;
+  job.leaseUntil = Date.now() + job.timeoutMs + (job.type === FETCH ? FETCH_LEASE_GRACE_MS : LEASE_GRACE_MS);
   return job;
 }
 
@@ -113,12 +122,15 @@ function lease(job, worker) {
 function wake(job) {
   for (let i = 0; i < waiters.length; i++) {
     const w = waiters[i];
-    if (!claimable(job, w.worker)) continue;
+    if (!claimable(job, w.worker, w.types)) continue;
     waiters.splice(i, 1);
     w.resolve(lease(job, w.worker));
     return;
   }
 }
+
+/** A fetch's caller is usually holding the line: it fails within its own timeout. */
+function queueTimeout(job) { return job.type === FETCH ? job.timeoutMs : QUEUE_TIMEOUT_MS; }
 
 /** Expired leases go back to the queue; jobs nobody takes or that keep dying fail. */
 function sweep() {
@@ -128,10 +140,11 @@ function sweep() {
       if (job.attempts >= MAX_ATTEMPTS) { finishJob(job, false, null, `lost ${job.attempts} workers; last was ${job.worker}`); continue; }
       job.status = 'pending'; job.worker = null; job.leaseUntil = null;
       wake(job);
-    } else if (job.status === 'pending' && t - Date.parse(job.createdAt) > QUEUE_TIMEOUT_MS) {
+    } else if (job.status === 'pending' && t - Date.parse(job.createdAt) > queueTimeout(job)) {
+      const within = job.type === FETCH ? `${Math.round(job.timeoutMs / 1000)} s` : `${Math.round(QUEUE_TIMEOUT_MS / 60000)} min`;
       finishJob(job, false, null, job.payload.worker
-        ? `worker ${job.payload.worker} did not claim it within ${Math.round(QUEUE_TIMEOUT_MS / 60000)} min`
-        : `no worker claimed it within ${Math.round(QUEUE_TIMEOUT_MS / 60000)} min`);
+        ? `worker ${job.payload.worker} did not claim it within ${within}`
+        : `no worker claimed it within ${within}`);
     }
   }
 }
@@ -155,18 +168,37 @@ function readScan(body) {
   return { payload, timeoutMs };
 }
 
+function readFetch(body) {
+  const raw = str(body.url).trim();
+  if (!raw) return { error: 'url is required' };
+  if (raw.length > 2048) return { error: 'url is at most 2048 characters' };
+  let url;
+  try { url = new URL(raw); } catch { return { error: 'url is not a URL' }; }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return { error: 'url must be http or https' };
+  const format = body.format == null ? 'markdown' : str(body.format);
+  if (!FETCH_FORMATS.includes(format)) return { error: `format is ${FETCH_FORMATS.join(', ')}` };
+  const timeoutMs = body.timeoutMs == null ? FETCH_DEFAULT_TIMEOUT_MS : Number(body.timeoutMs);
+  if (!Number.isFinite(timeoutMs) || timeoutMs < FETCH_MIN_TIMEOUT_MS || timeoutMs > FETCH_MAX_TIMEOUT_MS) {
+    return { error: `timeoutMs is from ${FETCH_MIN_TIMEOUT_MS} to ${FETCH_MAX_TIMEOUT_MS}` };
+  }
+  // The worker refuses private and local addresses itself: only it sees what the name resolves to.
+  const payload = { url: url.href, format, mainContent: body.mainContent !== false };
+  if (str(body.worker).trim()) payload.worker = str(body.worker).trim();
+  return { payload, timeoutMs };
+}
+
 /** Adds a job to the queue without offering it to a waiting worker. */
-function add(payload, timeoutMs, id = newId()) {
+function add(payload, timeoutMs, id = newId(), type = SCAN) {
   const job = {
-    id, type: JOB_TYPE, payload, timeoutMs, status: 'pending', worker: null, attempts: 0,
+    id, type, payload, timeoutMs, status: 'pending', worker: null, attempts: 0,
     createdAt: now(), startedAt: null, finishedAt: null, leaseUntil: null, result: null, error: null,
   };
   jobs.set(id, job);
   return job;
 }
 
-function create(payload, timeoutMs, id = newId()) {
-  const job = add(payload, timeoutMs, id);
+function create(payload, timeoutMs, type) {
+  const job = add(payload, timeoutMs, newId(), type);
   wake(job);
   return job;
 }
@@ -187,12 +219,12 @@ function waitFor(job, ms, res) {
   });
 }
 
-function take(worker, waitMs, res) {
-  const ready = [...jobs.values()].find((j) => claimable(j, worker));
+function take(worker, types, waitMs, res) {
+  const ready = [...jobs.values()].find((j) => claimable(j, worker, types));
   if (ready) return Promise.resolve(lease(ready, worker));
   if (waitMs <= 0) return Promise.resolve(null);
   return new Promise((resolve) => {
-    const entry = { worker, resolve: (job) => { clearTimeout(timer); res.off('close', onClose); resolve(job); } };
+    const entry = { worker, types, resolve: (job) => { clearTimeout(timer); res.off('close', onClose); resolve(job); } };
     waiters.push(entry);
     const drop = () => { const i = waiters.indexOf(entry); if (i >= 0) waiters.splice(i, 1); };
     const timer = setTimeout(() => { drop(); res.off('close', onClose); resolve(null); }, waitMs);
@@ -285,18 +317,22 @@ async function route(req, res) {
   if (method === 'GET' && p === '/api/jobs/next') {
     const worker = str(q.get('worker')).trim();
     if (!worker) { json(res, 400, { error: 'worker is required' }); return; }
-    const types = str(q.get('types')).split(',').map((t) => t.trim()).filter(Boolean);
-    if (types.length && !types.includes(JOB_TYPE)) { res.writeHead(204).end(); return; }
+    const asked = str(q.get('types')).split(',').map((t) => t.trim()).filter(Boolean);
+    let types = asked.length ? JOB_TYPES.filter((t) => asked.includes(t)) : JOB_TYPES;
+    if (!types.length) { res.writeHead(204).end(); return; }
     const w = touch(worker, callerIp(req));
+    w.types = types;
     const waitSec = Number(q.get('wait'));
     const waitMs = Math.min(MAX_WAIT_MS, Math.max(0, Number.isFinite(waitSec) ? waitSec * 1000 : MAX_WAIT_MS));
-    // A worker Google is resting gets no job; hold its poll so it does not spin.
-    if (w.coolUntil > Date.now()) {
+    // A worker Google is resting gets no scans, but still fetches pages.
+    if (w.coolUntil > Date.now()) types = types.filter((t) => t !== SCAN);
+    // Nothing it may take: hold its poll so it does not spin.
+    if (!types.length) {
       await new Promise((r) => setTimeout(r, Math.min(waitMs, w.coolUntil - Date.now())));
       res.writeHead(204).end();
       return;
     }
-    const job = await take(worker, waitMs, res);
+    const job = await take(worker, types, waitMs, res);
     if (!job) { if (!res.destroyed) res.writeHead(204).end(); return; }
     if (res.destroyed) { job.status = 'pending'; job.worker = null; job.attempts--; job.leaseUntil = null; wake(job); return; }
     json(res, 200, { job: view(job) });
@@ -329,7 +365,8 @@ async function route(req, res) {
       // Lost to a restart: file it again under the same id.
       if (!body.payload || typeof body.payload !== 'object') { json(res, 404, { error: 'no such job' }); return; }
       // Not create(): a waiting worker must not be handed a job this one is about to finish.
-      job = add({ ...body.payload }, DEFAULT_TIMEOUT_MS, id);
+      const type = body.type === FETCH ? FETCH : SCAN;
+      job = add({ ...body.payload }, type === FETCH ? FETCH_DEFAULT_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, id, type);
       lease(job, worker);
     }
     if (job.status === 'done' || job.status === 'failed') { json(res, 409, { error: `job is already ${job.status}` }); return; }
@@ -349,7 +386,7 @@ async function route(req, res) {
     const body = await readJson(req);
     const scan = readScan(body);
     if (scan.error) { json(res, 400, { error: scan.error }); return; }
-    const job = create(scan.payload, scan.timeoutMs);
+    const job = create(scan.payload, scan.timeoutMs, SCAN);
     const waitSec = Number(body.wait ?? q.get('wait'));
     const waited = await waitFor(job, Math.min(MAX_CALLER_WAIT_MS, Number.isFinite(waitSec) ? waitSec * 1000 : 0), res);
     if (res.destroyed) return;
@@ -357,9 +394,23 @@ async function route(req, res) {
     return;
   }
 
-  const scanId = /^\/api\/scan\/([a-f0-9]{12})$/.exec(p);
-  if (scanId && method === 'GET') {
-    const job = jobs.get(scanId[1]);
+  if (method === 'POST' && p === '/api/fetch') {
+    const body = await readJson(req);
+    const page = readFetch(body);
+    if (page.error) { json(res, 400, { error: page.error }); return; }
+    const job = create(page.payload, page.timeoutMs, FETCH);
+    // Answers in the same call unless the caller says otherwise, like Jina Reader; wait 0 returns the id at once.
+    const waitSec = Number(body.wait ?? q.get('wait') ?? NaN);
+    const waitMs = Number.isFinite(waitSec) ? waitSec * 1000 : page.timeoutMs + FETCH_LEASE_GRACE_MS;
+    const waited = await waitFor(job, Math.min(MAX_CALLER_WAIT_MS, waitMs), res);
+    if (res.destroyed) return;
+    json(res, waited.status === 'done' || waited.status === 'failed' ? 200 : 202, { job: view(waited) });
+    return;
+  }
+
+  const jobId = /^\/api\/(?:scan|fetch)\/([a-f0-9]{12})$/.exec(p);
+  if (jobId && method === 'GET') {
+    const job = jobs.get(jobId[1]);
     if (!job) { json(res, 404, { error: 'no such job' }); return; }
     const waitSec = Number(q.get('wait'));
     const waited = await waitFor(job, Math.min(MAX_CALLER_WAIT_MS, Number.isFinite(waitSec) ? waitSec * 1000 : 0), res);
@@ -367,8 +418,8 @@ async function route(req, res) {
     json(res, 200, { job: view(waited) });
     return;
   }
-  if (scanId && method === 'DELETE') {
-    const job = jobs.get(scanId[1]);
+  if (jobId && method === 'DELETE') {
+    const job = jobs.get(jobId[1]);
     if (!job) { json(res, 404, { error: 'no such job' }); return; }
     if (job.status === 'done' || job.status === 'failed') { json(res, 409, { error: `job is already ${job.status}` }); return; }
     finishJob(job, false, null, 'cancelled by the caller');
@@ -378,7 +429,8 @@ async function route(req, res) {
 
   if (method === 'GET' && p === '/api/scans') {
     const status = str(q.get('status'));
-    const list = [...jobs.values()].filter((j) => !status || j.status === status).reverse().slice(0, 200)
+    const type = str(q.get('type'));
+    const list = [...jobs.values()].filter((j) => (!status || j.status === status) && (!type || j.type === type)).reverse().slice(0, 200)
       .map(({ result, ...j }) => ({ ...view(j), found: result?.found ?? null }));
     json(res, 200, { jobs: list });
     return;

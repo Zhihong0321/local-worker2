@@ -74,6 +74,52 @@ test('retryAfterMs rests the worker', async () => {
   assert.equal((await call('/api/jobs/next?worker=pc-rest&wait=1', wk)).status, 204);
 });
 
+test('fetch round trip: only a worker asking for web.fetch gets it', async () => {
+  const posted = call('/api/fetch', api, { method: 'POST', body: JSON.stringify({ url: 'https://example.com/a', worker: 'pc-fetch' }) });
+  await new Promise((r) => setTimeout(r, 100));
+  // Earlier tests leave scans in the queue: a scan-only worker may get one of those, never the fetch.
+  const scanOnly = await call('/api/jobs/next?worker=pc-fetch&types=gmap.scan&wait=0', wk);
+  if (scanOnly.status === 200) assert.equal((await scanOnly.json()).job.type, 'gmap.scan');
+  const next = await call('/api/jobs/next?worker=pc-fetch&types=gmap.scan,web.fetch&wait=1', wk);
+  const { job } = await next.json();
+  assert.equal(job.type, 'web.fetch');
+  assert.deepEqual(job.payload, { url: 'https://example.com/a', format: 'markdown', mainContent: true, worker: 'pc-fetch' });
+  assert.equal(job.timeoutMs, 60_000);
+  const result = { url: job.payload.url, status: 200, title: 'A', content: '# A' };
+  await call(`/api/jobs/${job.id}/result`, wk, { method: 'POST', body: JSON.stringify({ worker: 'pc-fetch', ok: true, result }) });
+  const answer = await (await posted).json();
+  assert.equal(answer.job.status, 'done');
+  assert.equal(answer.job.result.content, '# A');
+  assert.equal((await (await call(`/api/fetch/${job.id}`, api)).json()).job.status, 'done');
+});
+
+test('fetch checks its input', async () => {
+  for (const body of [{}, { url: 'ftp://x.com/' }, { url: 'nope' }, { url: 'https://x.com/', format: 'pdf' }, { url: 'https://x.com/', timeoutMs: 1000 }]) {
+    assert.equal((await call('/api/fetch', api, { method: 'POST', body: JSON.stringify(body) })).status, 400, JSON.stringify(body));
+  }
+});
+
+test('fetch with wait 0 answers at once, and a worker Google is resting still fetches', async () => {
+  const scan = await (await call('/api/scan', api, { method: 'POST', body: JSON.stringify({ keyword: 'cafe', place: 'V', worker: 'pc-cool' }) })).json();
+  const { job: s } = await (await call('/api/jobs/next?worker=pc-cool&wait=1', wk)).json();
+  assert.equal(s.id, scan.job.id);
+  await call(`/api/jobs/${s.id}/result`, wk, { method: 'POST', body: JSON.stringify({ worker: 'pc-cool', ok: false, error: 'blocked', retryAfterMs: 60_000 }) });
+  const r = await call('/api/fetch', api, { method: 'POST', body: JSON.stringify({ url: 'https://example.com/b', worker: 'pc-cool', wait: 0 }) });
+  assert.equal(r.status, 202);
+  const posted = (await r.json()).job;
+  const { job } = await (await call('/api/jobs/next?worker=pc-cool&types=gmap.scan,web.fetch&wait=1', wk)).json();
+  assert.equal(job.id, posted.id);
+});
+
+test('a fetch result lost to a restart is filed again as a fetch', async () => {
+  const id = '0123456789ab';
+  const body = { worker: 'pc-test', type: 'web.fetch', ok: true, result: { content: 'x' }, payload: { url: 'https://example.com/', format: 'text' } };
+  assert.equal((await call(`/api/jobs/${id}/result`, wk, { method: 'POST', body: JSON.stringify(body) })).status, 200);
+  const { job } = await (await call(`/api/fetch/${id}`, api)).json();
+  assert.equal(job.type, 'web.fetch');
+  assert.equal(job.status, 'done');
+});
+
 test('package zip carries the worker key', async () => {
   const r = await call('/api/worker/package', api);
   assert.equal(r.status, 200);

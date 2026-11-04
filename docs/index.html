@@ -48,9 +48,9 @@
 <main>
 
 <h1>Local Gmap Worker API</h1>
-<p class="lead">Google Maps business scans as an API. Scans are run by Windows PCs on their own internet line and posted back here.</p>
+<p class="lead">Google Maps business scans and web page reads as an API. Both are run by Windows PCs on their own internet line and posted back here.</p>
 <nav>
-  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
+  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#fetch">Fetch a page</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
 </nav>
 
 <h2 id="base">Base URL</h2>
@@ -81,26 +81,52 @@
 </table>
 <p><code>200</code> with <code>{ "job": ... }</code> when the scan finished within <code>wait</code>. <code>202</code> with the job while it is still running. <code>400</code> for invalid input, with an <code>error</code> message.</p>
 
-<h2 id="get">Get, cancel and list scans</h2>
+<h2 id="fetch">Fetch a page</h2>
+<p><span class="ep">POST</span><span class="path">/api/fetch</span></p>
+<p>Reads one web page on a worker PC and returns it as markdown, text or HTML: a local stand-in for Jina Reader or Tavily extract. The call answers with the page by default.</p>
+<pre><code>curl -X POST https://YOUR-SERVICE/api/fetch \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/article"}'</code></pre>
+<table>
+  <tr><th>Field</th><th>Meaning</th></tr>
+  <tr><td><code>url</code></td><td>The page, http or https. Required. Workers refuse private and local addresses, including redirects to them.</td></tr>
+  <tr><td><code>format</code></td><td><code>markdown</code> (default), <code>text</code> or <code>html</code>.</td></tr>
+  <tr><td><code>mainContent</code></td><td>Default <code>true</code>: the page's <code>&lt;main&gt;</code> or <code>&lt;article&gt;</code> when it holds most of the text, without nav, header, footer, scripts or hidden elements. <code>false</code> returns the whole page.</td></tr>
+  <tr><td><code>wait</code></td><td>Seconds to hold the request. Default: the fetch's timeout plus 30 s. <code>0</code> returns <code>202</code> with the job at once.</td></tr>
+  <tr><td><code>timeoutMs</code></td><td>10000 to 300000. Default 60000. A fetch no worker claims within this fails.</td></tr>
+  <tr><td><code>worker</code></td><td>Pin the fetch to one worker by name.</td></tr>
+</table>
+<p>The job's <code>result</code>:</p>
+<pre><code>{ "url": "...", "finalUrl": "...",   // finalUrl after redirects
+  "status": 200, "contentType": "text/html", "title": "...",
+  "format": "markdown", "content": "# ...", "length": 14832,
+  "truncated": false,                // true past 5 MB of page
+  "provider": "scrapling-local", "tookMs": 1079, "worker": "pc-..." }</code></pre>
+<p>A site answering HTTP 400 or above, a non-page file (PDF, image) or a refused address fails the job with an <code>error</code>. Plain text and JSON come back as they are. Pages are read without a browser, so content drawn only by JavaScript is not there.</p>
+
+<h2 id="get">Get, cancel and list jobs</h2>
 <h3><span class="ep">GET</span><span class="path">/api/scan/{id}?wait=60</span></h3>
+<p><code>/api/fetch/{id}</code> is the same route for fetches.</p>
 <p>Returns the job. <code>wait</code> holds the request until it finishes, up to 900 seconds. <code>404</code> for an unknown id.</p>
 <h3><span class="ep">DELETE</span><span class="path">/api/scan/{id}</span></h3>
 <p>Cancels the job. <code>409</code> if it has already finished.</p>
 <h3><span class="ep">GET</span><span class="path">/api/scans?status=running</span></h3>
-<p>Recent jobs, up to 200, without results. <code>status</code> is optional: <code>pending</code>, <code>running</code>, <code>done</code> or <code>failed</code>.</p>
+<p>Recent jobs, up to 200, without results. <code>status</code> is optional: <code>pending</code>, <code>running</code>, <code>done</code> or <code>failed</code>. <code>type</code> is optional: <code>gmap.scan</code> or <code>web.fetch</code>.</p>
 
 <h2 id="other">Other routes</h2>
 <table>
   <tr><th>Route</th><th>What it does</th></tr>
   <tr><td><span class="ep">GET</span><span class="path">/health</span></td><td>Open. Returns <code>{ "ok": true, "workersLive": n }</code>. <code>workersLive</code> is how many PC workers are connected.</td></tr>
   <tr><td><span class="ep">GET</span><span class="path">/api/workers</span></td><td>Every worker seen: <code>name</code>, <code>live</code>, current <code>job</code>, <code>done</code>, <code>failed</code>, and <code>coolUntil</code> if Google is resting it.</td></tr>
-  <tr><td><span class="ep">GET</span><span class="path">/api/worker/package</span></td><td>The Windows worker as a zip. Unzip it on a PC and double-click <code>Start Local Gmap Worker.cmd</code>. Its key only claims and answers scans.</td></tr>
+  <tr><td><span class="ep">GET</span><span class="path">/api/worker/package</span></td><td>The Windows worker as a zip. Unzip it on a PC and double-click <code>Start Local Gmap Worker.cmd</code>. Its key only claims and answers jobs.</td></tr>
   <tr><td><span class="ep">GET</span><span class="path">/docs</span></td><td>This page. Open, no key.</td></tr>
 </table>
 
 <h2 id="job">Job object</h2>
 <pre><code>{
   "id": "857ccca76cfe",
+  "type": "gmap.scan",       // gmap.scan | web.fetch
   "status": "done",          // pending | running | done | failed
   "worker": "pc-desktop-camhl16",
   "attempts": 1,
@@ -126,10 +152,10 @@
 
 <h2 id="behaviour">Behaviour</h2>
 <ul>
-  <li><strong>No worker free.</strong> A job waits in the queue. After 30 minutes with no worker, it fails.</li>
+  <li><strong>No worker free.</strong> A job waits in the queue. A scan fails after 30 minutes with no worker, a fetch after its <code>timeoutMs</code>.</li>
   <li><strong>Lost worker.</strong> A job whose worker stops responding goes back to the queue. After 3 lost workers it fails.</li>
-  <li><strong>Google refusal.</strong> The worker posts what it has and rests for 30 minutes. The service sends it no jobs meanwhile.</li>
-  <li><strong>Restart.</strong> The queue is held in memory. A redeploy drops pending scans. A scan already running is re-filed when its worker posts the result.</li>
+  <li><strong>Google refusal.</strong> The worker posts what it has and rests for 30 minutes. The service sends it no scans meanwhile; it still takes fetches.</li>
+  <li><strong>Restart.</strong> The queue is held in memory. A redeploy drops pending jobs. A job already running is re-filed when its worker posts the result.</li>
 </ul>
 
 <h2 id="example">Example: a complete round trip</h2>

@@ -17,6 +17,11 @@
 # the keyword's family, then for a Business scan "shop/company in <street>" for
 # the streets the first pass found. The words come from the service on every job.
 #
+# It also takes web.fetch jobs: one page read on this PC's line and returned as
+# markdown, text or html, in place of Jina Reader or Tavily extract. fetch.py
+# does that with Scrapling's parts (no browser) in a Python of its own, which
+# this sets up under %LOCALAPPDATA% on first start. Scans work without it.
+#
 # Windows PowerShell 5.1, ASCII only (5.1 reads a BOM-less script as ANSI).
 param([ValidateSet('on', 'off', '')][string]$Autostart = '')
 
@@ -86,7 +91,9 @@ if (-not $Name) { $Name = 'pc-' + ($env:COMPUTERNAME.ToLower() -replace '[^a-z0-
 # Pause between two Google requests. 1 request a second was never refused in testing.
 $PaceMs = 500
 if ($Cfg['GMAP_PACE_MS']) { $PaceMs = [Math]::Max(0, [int]$Cfg['GMAP_PACE_MS']) }
-$Types = 'gmap.scan'
+# WEB_FETCH=off keeps this PC to Maps scans.
+$FetchOn = ([string]$Cfg['WEB_FETCH']).ToLower() -ne 'off'
+$script:Types = 'gmap.scan'
 # Time kept back from the job's deadline to post the result.
 $PostMarginSec = 60
 # After Google refuses this line, claim nothing for this long.
@@ -172,7 +179,7 @@ $script:LastBeat = Get-Date
 function Send-Beat {
   if (((Get-Date) - $script:LastBeat).TotalSeconds -lt 30) { return }
   $script:LastBeat = Get-Date
-  try { [void](Invoke-Hub 'POST' '/api/jobs/heartbeat' @{ worker = $Name; types = @($Types); jobId = $script:JobId } 20) } catch { }
+  try { [void](Invoke-Hub 'POST' '/api/jobs/heartbeat' @{ worker = $Name; types = @($script:Types.Split(',')); jobId = $script:JobId } 20) } catch { }
 }
 
 # ------------------------------------------------------------- google maps
@@ -392,12 +399,93 @@ function Invoke-Scan($Job, $Strategy) {
   }
 }
 
+# ---------------------------------------------------------------- web pages
+
+$PyVersion = '3.12.10'
+$PyDir = Join-Path $Data 'python'
+$PyExe = Join-Path $PyDir 'python.exe'
+# Pinned: fetch.py calls a private Scrapling helper. Changing a version here
+# reinstalls on every PC's next start.
+$FetchPackages = @('scrapling==0.5', 'curl_cffi==0.17.0', 'markdownify==1.2.3')
+$FetchStamp = Join-Path $PyDir 'installed.txt'
+$script:FetchReady = $false
+$script:NextSetup = Get-Date
+
+# Python's embeddable build and the fetch packages, once. False if it failed;
+# the worker then takes scans only and tries again in an hour.
+function Install-Fetcher {
+  $want = "$PyVersion " + ($FetchPackages -join ' ')
+  if ((Test-Path $PyExe) -and (Test-Path $FetchStamp) -and ([IO.File]::ReadAllText($FetchStamp).Trim() -eq $want)) { return $true }
+  Log 'setting up page fetching: Python and Scrapling, about 60 MB, once'
+  try {
+    if (-not (Test-Path $FetchStamp) -or -not ([IO.File]::ReadAllText($FetchStamp)).StartsWith("$PyVersion ")) {
+      if (Test-Path $PyDir) { Remove-Item $PyDir -Recurse -Force }
+      $zip = Join-Path $Data 'python.zip'
+      (New-Object Net.WebClient).DownloadFile("https://www.python.org/ftp/python/$PyVersion/python-$PyVersion-embed-amd64.zip", $zip)
+      Expand-Archive $zip $PyDir -Force
+      Remove-Item $zip -Force
+      # The embeddable build ignores site-packages, so pip too, until its ._pth file allows it.
+      $pth = (Get-ChildItem $PyDir -Filter 'python*._pth' | Select-Object -First 1).FullName
+      [IO.File]::WriteAllText($pth, ([IO.File]::ReadAllText($pth) -replace '(?m)^#\s*import site', 'import site'))
+      $getPip = Join-Path $PyDir 'get-pip.py'
+      (New-Object Net.WebClient).DownloadFile('https://bootstrap.pypa.io/get-pip.py', $getPip)
+      & $PyExe $getPip --quiet --no-warn-script-location
+      if ($LASTEXITCODE) { throw "get-pip exited $LASTEXITCODE" }
+    }
+    & $PyExe -m pip install --quiet --disable-pip-version-check --no-warn-script-location @FetchPackages
+    if ($LASTEXITCODE) { throw "pip exited $LASTEXITCODE" }
+    & $PyExe -I -c 'import curl_cffi, markdownify, scrapling.parser, scrapling.core.shell'
+    if ($LASTEXITCODE) { throw 'the packages installed but do not load' }
+    [IO.File]::WriteAllText($FetchStamp, $want)
+    Log 'page fetching is ready'
+    return $true
+  } catch {
+    Log "page fetching is off for now: setup failed ($($_.Exception.Message)). Trying again in an hour."
+    return $false
+  }
+}
+
+# One web.fetch job, by fetch.py in its own process; it gets the payload in a
+# file and prints one JSON line.
+function Invoke-Fetch($Job) {
+  $p = $Job.payload
+  $file = Join-Path $Data "fetch-$($Job.id).json"
+  $spec = @{ url = $p.url; format = $p.format; mainContent = ($p.mainContent -ne $false); timeoutMs = [int]$Job.timeoutMs }
+  [IO.File]::WriteAllText($file, ($spec | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
+  try {
+    $psi = New-Object Diagnostics.ProcessStartInfo $PyExe
+    $psi.Arguments = '-I "' + (Join-Path $PSScriptRoot 'fetch.py') + '" "' + $file + '"'
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $proc = [Diagnostics.Process]::Start($psi)
+    # Both streams at once: a full stderr pipe would stall the child.
+    $out = $proc.StandardOutput.ReadToEndAsync()
+    $err = $proc.StandardError.ReadToEndAsync()
+    if (-not $proc.WaitForExit([int]$Job.timeoutMs + 10000)) {
+      try { $proc.Kill() } catch { }
+      throw "the page took longer than $([int]($Job.timeoutMs / 1000)) s"
+    }
+    $proc.WaitForExit()
+    $line = $out.Result.Trim()
+    if (-not $line) { throw "fetch.py answered nothing: $($err.Result.Trim())" }
+    $r = $line | ConvertFrom-Json
+    if (-not $r.ok) { throw [string]$r.error }
+    $r.result | Add-Member worker $Name
+    return $r.result
+  } finally { Remove-Item $file -Force -ErrorAction SilentlyContinue }
+}
+
+# ------------------------------------------------------------------ results
+
 # Post a result, retrying the service for a few minutes. If it never takes it,
 # keep a copy on disk rather than lose the scan. The job's payload rides along:
 # when a service restart has lost the job, the service files the scan again
 # under the same id, so the caller polling it still gets it.
-function Send-Result([string]$Id, $Payload, [bool]$Ok, $Result, [string]$ErrorText, [int]$RetryAfterMs = 0) {
-  $body = @{ worker = $Name; ok = $Ok; result = $Result; error = $(if ($ErrorText) { $ErrorText } else { $null }); payload = $Payload }
+function Send-Result([string]$Id, $Payload, [bool]$Ok, $Result, [string]$ErrorText, [int]$RetryAfterMs = 0, [string]$Type = 'gmap.scan') {
+  $body = @{ worker = $Name; type = $Type; ok = $Ok; result = $Result; error = $(if ($ErrorText) { $ErrorText } else { $null }); payload = $Payload }
   # Tells the service to stop handing this worker jobs while Google rests it.
   if ($RetryAfterMs) { $body.retryAfterMs = $RetryAfterMs }
   foreach ($wait in 0, 10, 30, 60, 120) {
@@ -443,12 +531,21 @@ function Send-Unsaved {
 
 # --------------------------------------------------------------------- main
 
-Log "Local Gmap Worker '$Name' -> $Lab (Google Maps list pages, $PaceMs ms apart)"
+Log "Local Gmap Worker '$Name' -> $Lab (Google Maps list pages, $PaceMs ms apart; web pages $(if ($FetchOn) { 'on' } else { 'off' }))"
 $backoff = 5
+# While Google rests this line, take only web.fetch jobs, or nothing.
+$restUntil = Get-Date
 while ($true) {
   try {
     Send-Unsaved
-    $r = Invoke-Hub 'GET' ("/api/jobs/next?worker=$([uri]::EscapeDataString($Name))&types=$Types&wait=25") $null 45
+    if ($FetchOn -and -not $script:FetchReady -and (Get-Date) -ge $script:NextSetup) {
+      $script:FetchReady = Install-Fetcher
+      $script:NextSetup = (Get-Date).AddHours(1)
+    }
+    $resting = (Get-Date) -lt $restUntil
+    $script:Types = (@($(if (-not $resting) { 'gmap.scan' }), $(if ($script:FetchReady) { 'web.fetch' })) | Where-Object { $_ }) -join ','
+    if (-not $script:Types) { Start-Sleep -Seconds ([Math]::Max(1, [int]($restUntil - (Get-Date)).TotalSeconds)); continue }
+    $r = Invoke-Hub 'GET' ("/api/jobs/next?worker=$([uri]::EscapeDataString($Name))&types=$($script:Types)&wait=25") $null 45
     if ($r.status -eq 204) { $backoff = 5; continue }
     if ($r.status -eq 401 -or $r.status -eq 403) {
       Log "the service refused this worker's key (HTTP $($r.status)). Its API_KEY was probably rotated; download the package again (GET /api/worker/package). Retrying in 10 minutes."
@@ -459,6 +556,18 @@ while ($true) {
     $job = ($r.body | ConvertFrom-Json).job
     $script:JobId = $job.id
     $script:LastBeat = (Get-Date).AddSeconds(-60)
+    if ($job.type -eq 'web.fetch') {
+      Log "job $($job.id): fetch $($job.payload.url)"
+      try {
+        $result = Invoke-Fetch $job
+        Log "job $($job.id): HTTP $($result.status), $($result.length) characters of $($result.format) in $($result.tookMs) ms"
+        Send-Result $job.id $job.payload $true $result '' 0 'web.fetch'
+      } catch {
+        Log "job $($job.id) failed: $($_.Exception.Message)"
+        Send-Result $job.id $job.payload $false $null ([string]$_.Exception.Message) 0 'web.fetch'
+      } finally { $script:JobId = $null }
+      continue
+    }
     Log "job $($job.id): $($job.payload.keyword) in $($job.payload.place) (max $($job.payload.max))"
     Stay-Awake $true
     $rest = 0
@@ -477,7 +586,10 @@ while ($true) {
       Stay-Awake $false
       $script:JobId = $null
     }
-    if ($rest) { Log "resting $([Math]::Round($rest / 60)) min before the next job: Google refused this line"; Start-Sleep -Seconds $rest }
+    if ($rest) {
+      Log "no Maps jobs for $([Math]::Round($rest / 60)) min: Google refused this line$(if ($script:FetchReady) { '. Still taking web pages.' })"
+      $restUntil = (Get-Date).AddSeconds($rest)
+    }
   } catch {
     Log "service unreachable or error: $($_.Exception.Message). Retrying in $backoff s."
     Start-Sleep -Seconds $backoff
