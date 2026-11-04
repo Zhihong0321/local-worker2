@@ -41,14 +41,38 @@ caller ──POST /api/scan──▶  service (Railway)  ◀──GET /api/jobs/
 curl -H "Authorization: Bearer $API_KEY" -o LocalGmapWorker.zip https://<service>/api/worker/package
 ```
 
-Unzip on the PC, double-click `Start Local Gmap Worker.cmd`, then
-`Enable autostart.cmd`. The zip holds `WORKER_KEY`, an HMAC of `API_KEY`: it
+Unzip on the PC and double-click `Start Local Gmap Worker.cmd`. On first start,
+it installs dependencies, enables startup at Windows sign-in and asks you to
+sign in to LinkedIn. The zip holds `WORKER_KEY`, an HMAC of `API_KEY`: it
 only reaches the worker routes. Rotating `API_KEY` means downloading a fresh
 package.
 
 ## API
 
 All routes take `Authorization: Bearer <API_KEY>` (or `x-api-key`).
+
+**`POST /api/linkedin`** queues a LinkedIn profile or company scrape on an
+opted-in worker. Example: `{"kind":"person","url":"https://www.linkedin.com/in/example/","wait":60}`.
+Use `kind: "company"` with a `/company/.../` URL for a company. The response
+is `{ job }`; poll or cancel using `GET` or `DELETE /api/linkedin/:id`. The
+result contains `data` from linkedin-scraper, `kind`, `url`, `provider`,
+`tookMs`, and `worker`. `wait` defaults to 0; `timeoutMs` defaults to 120000
+and accepts 10000–300000. `worker` optionally pins the job to a named PC.
+
+On first start the downloaded worker installs its own Python, PDF reader,
+LinkedIn scraper and Chromium. If there is no saved LinkedIn session, it opens
+a login window; sign in and wait for your feed. No Python commands or edits to
+`worker.env` are needed. If your session expires, run `LinkedIn sign in.cmd`
+from the worker folder to sign in again. The session contains login cookies and
+must be kept private. Google may reject sign-in from an automated browser;
+LinkedIn login and verification still require your participation. LinkedIn can
+restrict automated access, and results depend on account access and page
+changes. The upstream project is GPL-3.0; review its license for your deployment.
+LinkedIn job starts are spaced by 60 seconds per PC by default, including after
+a worker restart (`LINKEDIN_PACE_MS` changes this). This is not a guarantee
+against LinkedIn restrictions, especially if multiple workers use one account.
+Company results fail if no About-page details could be read, rather than returning
+only a name as a successful scrape. Fields not present on the page remain null.
 
 **`POST /api/scan`** — queue a scan.
 

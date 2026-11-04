@@ -24,7 +24,8 @@ const PORT = Number(process.env.PORT) || 8080;
 const KEY_LABEL = 'local-gmap-worker-v1';
 const SCAN = 'gmap.scan';
 const FETCH = 'web.fetch';
-const JOB_TYPES = [SCAN, FETCH];
+const LINKEDIN = 'linkedin.scrape';
+const JOB_TYPES = [SCAN, FETCH, LINKEDIN];
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 const MIN_TIMEOUT_MS = 120_000;
@@ -285,8 +286,10 @@ function liveWorkers() {
   return [...workers.values()].map((w) => ({
     ...w,
     live: t - Date.parse(w.lastSeen) < WORKER_LIVE_MS,
-    coolUntil: w.coolUntil > t ? new Date(w.coolUntil).toISOString() : null,
-    coolReason: w.coolUntil > t ? w.coolReason : null,
+    coolUntil: w.coolUntil > t ? new Date(w.coolUntil).toISOString() : w.linkedinCoolUntil > t ? new Date(w.linkedinCoolUntil).toISOString() : null,
+    coolReason: w.coolUntil > t ? w.coolReason : w.linkedinCoolUntil > t ? 'LinkedIn rate limited' : w.linkedinSessionExpired ? 'LinkedIn session expired' : null,
+    linkedinCoolUntil: w.linkedinCoolUntil > t ? new Date(w.linkedinCoolUntil).toISOString() : null,
+    linkedinSessionExpired: !!w.linkedinSessionExpired,
     job: [...jobs.values()].find((j) => j.status === 'running' && j.worker === w.name)?.id ?? null,
   }));
 }
@@ -318,17 +321,24 @@ async function route(req, res) {
     const worker = str(q.get('worker')).trim();
     if (!worker) { json(res, 400, { error: 'worker is required' }); return; }
     const asked = str(q.get('types')).split(',').map((t) => t.trim()).filter(Boolean);
-    let types = asked.length ? JOB_TYPES.filter((t) => asked.includes(t)) : JOB_TYPES;
+    let types = asked.length ? JOB_TYPES.filter((t) => asked.includes(t)) : [SCAN, FETCH];
     if (!types.length) { res.writeHead(204).end(); return; }
     const w = touch(worker, callerIp(req));
     w.types = types;
+    if (q.has('linkedinState')) {
+      const state = q.get('linkedinState');
+      w.linkedinSessionExpired = state === 'session_expired';
+      const until = Number(q.get('linkedinCoolUntil'));
+      w.linkedinCoolUntil = state === 'rate_limited' && Number.isFinite(until) ? Math.min(until, Date.now() + 6 * 3_600_000) : 0;
+    }
     const waitSec = Number(q.get('wait'));
     const waitMs = Math.min(MAX_WAIT_MS, Math.max(0, Number.isFinite(waitSec) ? waitSec * 1000 : MAX_WAIT_MS));
     // A worker Google is resting gets no scans, but still fetches pages.
     if (w.coolUntil > Date.now()) types = types.filter((t) => t !== SCAN);
+    if (w.linkedinSessionExpired || w.linkedinCoolUntil > Date.now()) types = types.filter((t) => t !== LINKEDIN);
     // Nothing it may take: hold its poll so it does not spin.
     if (!types.length) {
-      await new Promise((r) => setTimeout(r, Math.min(waitMs, w.coolUntil - Date.now())));
+      await new Promise((r) => setTimeout(r, waitMs));
       res.writeHead(204).end();
       return;
     }
@@ -356,7 +366,11 @@ async function route(req, res) {
     if (!worker) { json(res, 400, { error: 'worker is required' }); return; }
     const w = touch(worker, callerIp(req));
     const retryAfterMs = Number(body.retryAfterMs);
-    if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+    if (body.type === LINKEDIN && str(body.error).startsWith('session_expired:')) {
+      w.linkedinSessionExpired = true;
+    } else if (body.type === LINKEDIN && str(body.error).startsWith('rate_limited:') && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+      w.linkedinCoolUntil = Date.now() + Math.min(retryAfterMs, 6 * 3_600_000);
+    } else if (Number.isFinite(retryAfterMs) && retryAfterMs > 0 && body.type !== LINKEDIN) {
       w.coolUntil = Date.now() + Math.min(retryAfterMs, 6 * 3_600_000);
       w.coolReason = 'Google refused this line';
     }
@@ -365,7 +379,7 @@ async function route(req, res) {
       // Lost to a restart: file it again under the same id.
       if (!body.payload || typeof body.payload !== 'object') { json(res, 404, { error: 'no such job' }); return; }
       // Not create(): a waiting worker must not be handed a job this one is about to finish.
-      const type = body.type === FETCH ? FETCH : SCAN;
+      const type = JOB_TYPES.includes(body.type) ? body.type : SCAN;
       job = add({ ...body.payload }, type === FETCH ? FETCH_DEFAULT_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, id, type);
       lease(job, worker);
     }
@@ -408,7 +422,27 @@ async function route(req, res) {
     return;
   }
 
-  const jobId = /^\/api\/(?:scan|fetch)\/([a-f0-9]{12})$/.exec(p);
+  if (method === 'POST' && p === '/api/linkedin') {
+    const body = await readJson(req);
+    let url;
+    try { url = new URL(str(body.url)); } catch { json(res, 400, { error: 'valid LinkedIn URL required' }); return; }
+    const kind = str(body.kind);
+    const prefix = kind === 'person' ? 'in' : kind === 'company' ? 'company' : null;
+    if (!prefix || url.protocol !== 'https:' || !['linkedin.com', 'www.linkedin.com'].includes(url.hostname) || url.port || url.username || url.password || !new RegExp(`^/${prefix}/[^/]+/?$`).test(url.pathname) || url.search || url.hash) {
+      json(res, 400, { error: 'kind must be person or company with a matching LinkedIn URL' }); return;
+    }
+    const timeoutMs = body.timeoutMs == null ? 120000 : Number(body.timeoutMs);
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 10000 || timeoutMs > 300000) { json(res, 400, { error: 'timeoutMs is from 10000 to 300000' }); return; }
+    const payload = { kind, url: url.href };
+    if (str(body.worker).trim()) payload.worker = str(body.worker).trim();
+    const job = create(payload, timeoutMs, LINKEDIN);
+    const waitSec = Number(body.wait ?? q.get('wait') ?? 0);
+    const waited = await waitFor(job, Math.min(MAX_CALLER_WAIT_MS, Number.isFinite(waitSec) ? waitSec * 1000 : 0), res);
+    if (!res.destroyed) json(res, waited.status === 'done' || waited.status === 'failed' ? 200 : 202, { job: view(waited) });
+    return;
+  }
+
+  const jobId = /^\/api\/(?:scan|fetch|linkedin)\/([a-f0-9]{12})$/.exec(p);
   if (jobId && method === 'GET') {
     const job = jobs.get(jobId[1]);
     if (!job) { json(res, 404, { error: 'no such job' }); return; }

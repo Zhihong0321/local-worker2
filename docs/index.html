@@ -48,9 +48,9 @@
 <main>
 
 <h1>Local Gmap Worker API</h1>
-<p class="lead">Google Maps business scans and web page reads as an API. Both are run by Windows PCs on their own internet line and posted back here.</p>
+<p class="lead">Google Maps business scans, web page reads, and LinkedIn profile and company scraping as an API. Jobs run on Windows worker PCs and are posted back here.</p>
 <nav>
-  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#fetch">Fetch a page</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
+  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#linkedin">LinkedIn</a><a href="#fetch">Fetch a page</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
 </nav>
 
 <h2 id="base">Base URL</h2>
@@ -81,6 +81,41 @@
 </table>
 <p><code>200</code> with <code>{ "job": ... }</code> when the scan finished within <code>wait</code>. <code>202</code> with the job while it is still running. <code>400</code> for invalid input, with an <code>error</code> message.</p>
 
+<h2 id="linkedin">Scrape a LinkedIn profile or company</h2>
+<p><span class="ep">POST</span><span class="path">/api/linkedin</span></p>
+<p>Read one person profile or company page using the worker's authenticated LinkedIn session and <a href="https://github.com/joeyism/linkedin_scraper">linkedin-scraper</a>. A person result may include name, location, about, experience, education, interests, accomplishments and contact details. A company result may include name, about, website, phone, headquarters, industry, size and specialties. Available fields depend on the page and the signed-in account's access.</p>
+<p>This endpoint takes a known URL. It does not expose LinkedIn search, job listings, company posts or bulk scraping.</p>
+<pre><code>curl -X POST https://YOUR-SERVICE/api/linkedin \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"kind":"person","url":"https://www.linkedin.com/in/example/","wait":60}'</code></pre>
+<p>For a company, send <code>{"kind":"company","url":"https://www.linkedin.com/company/example/"}</code>.</p>
+<table>
+  <tr><th>Field</th><th>Meaning</th></tr>
+  <tr><td><code>kind</code></td><td>Required: <code>person</code> or <code>company</code>.</td></tr>
+  <tr><td><code>url</code></td><td>Required HTTPS URL on <code>linkedin.com</code> or <code>www.linkedin.com</code>. Use <code>/in/...</code> for a person and <code>/company/...</code> for a company; omit query strings and fragments.</td></tr>
+  <tr><td><code>wait</code></td><td>Seconds to wait for completion, up to 900. Default <code>0</code> returns the queued job immediately.</td></tr>
+  <tr><td><code>timeoutMs</code></td><td>Worker execution limit, 10000 to 300000 milliseconds. Default 120000.</td></tr>
+  <tr><td><code>worker</code></td><td>Optional worker name to pin the job to a particular PC.</td></tr>
+</table>
+<p>The response is <code>{ "job": ... }</code>: HTTP <code>202</code> while pending or running, or <code>200</code> if finished during the wait. Invalid input returns <code>400</code>. A completed request can still have <code>job.status: "failed"</code>; check <code>job.error</code>.</p>
+<p>When successful, <code>job.result</code> has this shape (the contents of <code>data</code> vary by page):</p>
+<pre><code>{
+  "kind": "person",
+  "url": "https://www.linkedin.com/in/example/",
+  "data": { "name": "Example", "location": "...", "experiences": [], "educations": [] },
+  "provider": "linkedin-scraper",
+  "tookMs": 12345,
+  "worker": "pc-example"
+}</code></pre>
+<pre><code># Poll a queued job (replace &lt;id&gt; with job.id)
+curl -H "Authorization: Bearer $API_KEY" "https://YOUR-SERVICE/api/linkedin/&lt;id&gt;?wait=60"
+
+# Cancel a pending or running job
+curl -X DELETE -H "Authorization: Bearer $API_KEY" "https://YOUR-SERVICE/api/linkedin/&lt;id&gt;"</code></pre>
+<p class="note">A worker must be configured with the scraper, Chromium and a local authenticated LinkedIn session. See the repository README for setup. Sessions can expire, and LinkedIn restrictions or page changes can cause incomplete results or failures. A pending LinkedIn job times out after the queue timeout (30 minutes by default) if no suitable worker claims it.</p>
+<p>Company data comes from one About page. If no details can be read, the job fails with <code>about_not_read</code> instead of returning only a name. A missing page reports <code>not_found</code>; an expired login or checkpoint reports <code>session_expired</code>; a rate limit reports <code>rate_limited</code>. Individual fields may still be empty when absent from the page. Successful results include <code>waitedMs</code> for worker pacing, <code>navigationMs</code> for page navigation and <code>tookMs</code> for scraping. A failed job includes its pacing wait in the error text.</p>
+<p>Workers space LinkedIn job starts by 60 seconds by default; this does not guarantee that LinkedIn will not restrict an account, especially across multiple workers. A rate-limited worker rests LinkedIn jobs for 30 minutes; an expired session stops LinkedIn claims until sign-in is renewed. Maps and fetch jobs remain available. <code>GET /api/workers</code> shows <code>linkedinCoolUntil</code>, <code>linkedinSessionExpired</code>, and the current <code>coolReason</code>.</p>
 <h2 id="fetch">Fetch a page</h2>
 <p><span class="ep">POST</span><span class="path">/api/fetch</span></p>
 <p>Reads one web page on a worker PC and returns it as markdown, text or HTML: a local stand-in for Jina Reader or Tavily extract. The call answers with the page by default.</p>
@@ -108,12 +143,12 @@
 
 <h2 id="get">Get, cancel and list jobs</h2>
 <h3><span class="ep">GET</span><span class="path">/api/scan/{id}?wait=60</span></h3>
-<p><code>/api/fetch/{id}</code> is the same route for fetches.</p>
+<p><code>/api/fetch/{id}</code> and <code>/api/linkedin/{id}</code> also retrieve jobs.</p>
 <p>Returns the job. <code>wait</code> holds the request until it finishes, up to 900 seconds. <code>404</code> for an unknown id.</p>
 <h3><span class="ep">DELETE</span><span class="path">/api/scan/{id}</span></h3>
-<p>Cancels the job. <code>409</code> if it has already finished.</p>
+<p>Cancels the job. <code>/api/fetch/{id}</code> and <code>/api/linkedin/{id}</code> also accept DELETE. <code>409</code> if it has already finished.</p>
 <h3><span class="ep">GET</span><span class="path">/api/scans?status=running</span></h3>
-<p>Recent jobs, up to 200, without results. <code>status</code> is optional: <code>pending</code>, <code>running</code>, <code>done</code> or <code>failed</code>. <code>type</code> is optional: <code>gmap.scan</code> or <code>web.fetch</code>.</p>
+<p>Recent jobs, up to 200, without results. <code>status</code> is optional: <code>pending</code>, <code>running</code>, <code>done</code> or <code>failed</code>. <code>type</code> is optional: <code>gmap.scan</code>, <code>web.fetch</code> or <code>linkedin.scrape</code>.</p>
 
 <h2 id="other">Other routes</h2>
 <table>
@@ -127,7 +162,7 @@
 <h2 id="job">Job object</h2>
 <pre><code>{
   "id": "857ccca76cfe",
-  "type": "gmap.scan",       // gmap.scan | web.fetch
+  "type": "gmap.scan",       // gmap.scan | web.fetch | linkedin.scrape
   "status": "done",          // pending | running | done | failed
   "worker": "pc-desktop-camhl16",
   "attempts": 1,

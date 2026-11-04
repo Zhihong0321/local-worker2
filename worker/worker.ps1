@@ -62,6 +62,7 @@ if ($Autostart) {
     if (Test-Path $link) { Remove-Item $link -Force }
     Write-Host 'Autostart is off.'
   }
+  [IO.File]::WriteAllText((Join-Path $Data 'autostart-configured.txt'), 'configured')
   exit 0
 }
 
@@ -93,6 +94,20 @@ $PaceMs = 500
 if ($Cfg['GMAP_PACE_MS']) { $PaceMs = [Math]::Max(0, [int]$Cfg['GMAP_PACE_MS']) }
 # WEB_FETCH=off keeps this PC to Maps scans.
 $FetchOn = ([string]$Cfg['WEB_FETCH']).ToLower() -ne 'off'
+$LinkedInPython = [string]$Cfg['LINKEDIN_PYTHON']
+$LinkedInSession = [string]$Cfg['LINKEDIN_SESSION']
+# Space LinkedIn requests on this PC, including after a restart.
+$LinkedInPaceMs = 60000
+if ($Cfg['LINKEDIN_PACE_MS']) { $LinkedInPaceMs = [Math]::Max(0, [int]$Cfg['LINKEDIN_PACE_MS']) }
+$LinkedInLastFile = Join-Path $Data 'linkedin-last-start.txt'
+$LinkedInStateFile = Join-Path $Data 'linkedin-state.json'
+$LinkedInState = @{ state = 'ready'; until = [long]0; sessionTicks = [long]0 }
+if (Test-Path $LinkedInStateFile) {
+  try {
+    $saved = Get-Content -LiteralPath $LinkedInStateFile -Raw | ConvertFrom-Json
+    $LinkedInState = @{ state = [string]$saved.state; until = [long]$saved.until; sessionTicks = [long]$saved.sessionTicks }
+  } catch { Log 'Could not read LinkedIn state; sign-in may need to be repeated.' }
+}
 $script:Types = 'gmap.scan'
 # Time kept back from the job's deadline to post the result.
 $PostMarginSec = 60
@@ -109,6 +124,21 @@ $mutex = New-Object Threading.Mutex($false, 'Local\LocalGmapWorker')
 if (-not $mutex.WaitOne(0)) {
   Write-Host 'The Local Gmap Worker is already running on this PC.'
   exit 2
+}
+
+# Enable sign-in startup once on first setup. Disabling it later stays disabled.
+$AutostartMark = Join-Path $Data 'autostart-configured.txt'
+if (-not (Test-Path $AutostartMark)) {
+  try {
+    $startupLink = Join-Path ([Environment]::GetFolderPath('Startup')) 'Local Gmap Worker.lnk'
+    $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($startupLink)
+    $shortcut.TargetPath = Join-Path $Root 'Start Local Gmap Worker.cmd'
+    $shortcut.WorkingDirectory = $Root
+    $shortcut.WindowStyle = 7
+    $shortcut.Save()
+    [IO.File]::WriteAllText($AutostartMark, 'configured')
+    Log 'autostart enabled for Windows sign-in'
+  } catch { Log "could not enable autostart: $($_.Exception.Message)" }
 }
 
 Get-ChildItem $Root -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
@@ -189,7 +219,7 @@ function Invoke-Http([string]$Method, [string]$Uri, [hashtable]$Headers = @{}, [
 function Invoke-Hub([string]$Method, [string]$Path, $Body = $null, [int]$TimeoutSec = 60) {
   # Assigned, not taken from an `if`: PowerShell would unroll the array.
   $bytes = $null
-  if ($null -ne $Body) { $bytes = [Text.Encoding]::UTF8.GetBytes(($Body | ConvertTo-Json -Depth 8 -Compress)) }
+  if ($null -ne $Body) { $bytes = [Text.Encoding]::UTF8.GetBytes(($Body | ConvertTo-Json -Depth 30 -Compress)) }
   return Invoke-Http $Method ($Lab + $Path) @{ authorization = 'Bearer ' + $Key } $bytes $TimeoutSec
 }
 
@@ -423,6 +453,12 @@ function Invoke-Scan($Job, $Strategy) {
 $PyVersion = '3.12.10'
 $PyDir = Join-Path $Data 'python'
 $PyExe = Join-Path $PyDir 'python.exe'
+if (-not $LinkedInPython) { $LinkedInPython = $PyExe }
+if (-not $LinkedInSession) { $LinkedInSession = Join-Path $Data 'linkedin_session.json' }
+$LinkedInStamp = Join-Path $Data 'linkedin-installed.txt'
+$script:LinkedInReady = $false
+$script:NextLinkedInSetup = Get-Date
+$script:LoginAttempted = $false
 # Pinned: fetch.py calls a private Scrapling helper. Changing a version here
 # reinstalls on every PC's next start.
 $FetchPackages = @('scrapling==0.5', 'curl_cffi==0.17.0', 'markdownify==1.2.3')
@@ -492,6 +528,28 @@ function Install-PdfReader {
   }
 }
 
+# Install the scraper and browser into the worker's own Python. A custom Python
+# can still be supplied in worker.env for existing installations.
+function Install-LinkedIn {
+  $want = "$LinkedInPython linkedin-scraper==3.1.2 playwright-chromium-v1"
+  if ((Test-Path $LinkedInPython) -and (Test-Path $LinkedInStamp) -and ([IO.File]::ReadAllText($LinkedInStamp).Trim() -eq $want)) { return $true }
+  try {
+    Log 'setting up LinkedIn: installing scraper and Chromium (first start only)'
+    & $LinkedInPython -m pip install --quiet --disable-pip-version-check --no-warn-script-location 'linkedin-scraper==3.1.2'
+    if ($LASTEXITCODE) { throw "pip exited $LASTEXITCODE" }
+    & $LinkedInPython -m playwright install chromium
+    if ($LASTEXITCODE) { throw "browser installation exited $LASTEXITCODE" }
+    & $LinkedInPython -c 'from linkedin_scraper import BrowserManager, PersonScraper, CompanyScraper'
+    if ($LASTEXITCODE) { throw 'LinkedIn packages do not load' }
+    [IO.File]::WriteAllText($LinkedInStamp, $want)
+    Log 'LinkedIn scraper is installed'
+    return $true
+  } catch {
+    Log "LinkedIn setup failed: $($_.Exception.Message). Trying again in an hour."
+    return $false
+  }
+}
+
 # One web.fetch job, by fetch.py in its own process; it gets the payload in a
 # file and prints one JSON line.
 function Invoke-Fetch($Job) {
@@ -549,7 +607,7 @@ function Send-Result([string]$Id, $Payload, [bool]$Ok, $Result, [string]$ErrorTe
   }
   $dir = Join-Path $Data 'unsaved'
   New-Item -ItemType Directory -Force $dir | Out-Null
-  [IO.File]::WriteAllText((Join-Path $dir "$Id.json"), ($body | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding $false))
+  [IO.File]::WriteAllText((Join-Path $dir "$Id.json"), ($body | ConvertTo-Json -Depth 30), (New-Object Text.UTF8Encoding $false))
   Log "  result kept at $dir\$Id.json"
 }
 
@@ -594,10 +652,23 @@ while ($true) {
       $script:PdfReady = Install-PdfReader
       $script:NextPdfSetup = (Get-Date).AddHours(1)
     }
+    if ($script:FetchReady -and -not $script:LinkedInReady -and (Get-Date) -ge $script:NextLinkedInSetup) {
+      $script:LinkedInReady = Install-LinkedIn
+      $script:NextLinkedInSetup = (Get-Date).AddHours(1)
+    }
+    if ($script:LinkedInReady -and -not (Test-Path -LiteralPath $LinkedInSession) -and -not $script:LoginAttempted) {
+      $script:LoginAttempted = $true
+      Log 'LinkedIn login: sign in in the browser window, then wait for your feed.'
+      & $LinkedInPython (Join-Path $PSScriptRoot 'linkedin_login.py') $LinkedInSession
+      if ($LASTEXITCODE -or -not (Test-Path -LiteralPath $LinkedInSession)) { Log 'LinkedIn login was not completed. Restart the worker to try again.' }
+      else { Log 'LinkedIn login saved.' }
+    }
     $resting = (Get-Date) -lt $restUntil
-    $script:Types = (@($(if (-not $resting) { 'gmap.scan' }), $(if ($script:FetchReady) { 'web.fetch' })) | Where-Object { $_ }) -join ','
+    if ($LinkedInState.state -eq 'session_expired' -and (Test-Path -LiteralPath $LinkedInSession) -and (Get-Item -LiteralPath $LinkedInSession).LastWriteTimeUtc.Ticks -gt $LinkedInState.sessionTicks) { $LinkedInState.state = 'ready'; $LinkedInState.until = 0 }
+    if ($LinkedInState.state -eq 'rate_limited' -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -ge $LinkedInState.until) { $LinkedInState.state = 'ready'; $LinkedInState.until = 0 }
+    $script:Types = (@($(if (-not $resting) { 'gmap.scan' }), $(if ($script:FetchReady) { 'web.fetch' }), $(if ($script:LinkedInReady -and (Test-Path -LiteralPath $LinkedInSession) -and $LinkedInState.state -eq 'ready') { 'linkedin.scrape' })) | Where-Object { $_ }) -join ','
     if (-not $script:Types) { Start-Sleep -Seconds ([Math]::Max(1, [int]($restUntil - (Get-Date)).TotalSeconds)); continue }
-    $r = Invoke-Hub 'GET' ("/api/jobs/next?worker=$([uri]::EscapeDataString($Name))&types=$($script:Types)&wait=25") $null 45
+    $r = Invoke-Hub 'GET' ("/api/jobs/next?worker=$([uri]::EscapeDataString($Name))&types=$($script:Types)&wait=25&linkedinState=$($LinkedInState.state)&linkedinCoolUntil=$($LinkedInState.until)") $null 45
     if ($r.status -eq 204) { $backoff = 5; continue }
     if ($r.status -eq 401 -or $r.status -eq 403) {
       Log "the service refused this worker's key (HTTP $($r.status)). Its API_KEY was probably rotated; download the package again (GET /api/worker/package). Retrying in 10 minutes."
@@ -608,6 +679,59 @@ while ($true) {
     $job = ($r.body | ConvertFrom-Json).job
     $script:JobId = $job.id
     $script:LastBeat = (Get-Date).AddSeconds(-60)
+    if ($job.type -eq 'linkedin.scrape') {
+      $file = Join-Path $Data "linkedin-$($job.id).json"
+      $paceStart = [DateTime]::UtcNow
+      $waitedMs = 0
+      try {
+        $lastTicks = [long]0
+        if (Test-Path $LinkedInLastFile) { [void][long]::TryParse([IO.File]::ReadAllText($LinkedInLastFile).Trim(), [ref]$lastTicks) }
+        if ($lastTicks -gt 0) {
+          $next = (New-Object DateTime($lastTicks, [DateTimeKind]::Utc)).AddMilliseconds($LinkedInPaceMs)
+          while ([DateTime]::UtcNow -lt $next) {
+            Send-Beat
+            Start-Sleep -Seconds 1
+          }
+        }
+        $waitedMs = [int]([DateTime]::UtcNow - $paceStart).TotalMilliseconds
+        [IO.File]::WriteAllText($LinkedInLastFile, [string][DateTime]::UtcNow.Ticks)
+        [IO.File]::WriteAllText($file, ($job.payload | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
+        $psi = New-Object Diagnostics.ProcessStartInfo $LinkedInPython
+        $psi.Arguments = '"' + (Join-Path $PSScriptRoot 'linkedin_job.py') + '" "' + $file + '"'
+        $psi.EnvironmentVariables['LINKEDIN_SESSION'] = $LinkedInSession
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $proc = [Diagnostics.Process]::Start($psi)
+        $out = $proc.StandardOutput.ReadToEndAsync()
+        $err = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit([int]$job.timeoutMs)) { try { $proc.Kill() } catch { }; throw 'LinkedIn job timed out' }
+        $proc.WaitForExit()
+        $line = @($out.Result.Trim() -split "`r?`n")[-1]
+        if (-not $line) { throw "LinkedIn scraper returned no result: $($err.Result.Trim())" }
+        $answer = $line | ConvertFrom-Json
+        if (-not $answer.ok) { throw [string]$answer.error }
+        $answer.result | Add-Member worker $Name
+        $answer.result | Add-Member waitedMs $waitedMs
+        Send-Result $job.id $job.payload $true $answer.result '' 0 'linkedin.scrape'
+      } catch {
+        Log "LinkedIn job $($job.id) failed: $($_.Exception.Message)"
+        $message = [string]$_.Exception.Message
+        $retry = 0
+        if ($message.StartsWith('rate_limited:')) {
+          $retry = 1800000
+          $LinkedInState.state = 'rate_limited'
+          $LinkedInState.until = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + $retry
+        } elseif ($message.StartsWith('session_expired:')) {
+          $LinkedInState.state = 'session_expired'
+          if (Test-Path -LiteralPath $LinkedInSession) { $LinkedInState.sessionTicks = (Get-Item -LiteralPath $LinkedInSession).LastWriteTimeUtc.Ticks }
+        }
+        if ($LinkedInState.state -ne 'ready') { [IO.File]::WriteAllText($LinkedInStateFile, ($LinkedInState | ConvertTo-Json -Compress)) }
+        Send-Result $job.id $job.payload $false $null ($message + " (waitedMs=$waitedMs)") $retry 'linkedin.scrape'
+      } finally { Remove-Item $file -Force -ErrorAction SilentlyContinue; $script:JobId = $null }
+      continue
+    }
     if ($job.type -eq 'web.fetch') {
       Log "job $($job.id): fetch $($job.payload.url)"
       try {
