@@ -13,6 +13,7 @@ START
   1. Unzip this folder somewhere it can stay (for example C:\LocalGmapWorker).
   2. Double-click "Start Local Gmap Worker.cmd". A window opens and shows what
      the worker is doing. If Windows asks whether to run the file, choose Run.
+     It also puts a "Local Worker v2" shortcut on the desktop to start it again.
   3. Double-click "Enable autostart.cmd" so the worker starts by itself each
      time you sign in to Windows. "Disable autostart.cmd" undoes it.
 

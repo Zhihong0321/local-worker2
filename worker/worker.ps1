@@ -113,6 +113,25 @@ if (-not $mutex.WaitOne(0)) {
 
 Get-ChildItem $Root -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
 
+# "Local Worker v2" on the desktop, made on first start. Later starts only point
+# it at this folder again if the folder moved; one the user deleted stays gone.
+$DesktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Local Worker v2.lnk'
+$DesktopMark = Join-Path $Data 'desktop-shortcut.txt'
+if (-not (Test-Path $DesktopMark) -or (Test-Path $DesktopLink)) {
+  try {
+    $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($DesktopLink)
+    $target = Join-Path $Root 'Start Local Gmap Worker.cmd'
+    if ($shortcut.TargetPath -ne $target) {
+      $shortcut.TargetPath = $target
+      $shortcut.WorkingDirectory = $Root
+      $shortcut.Description = 'Local Worker v2: Maps scans and web pages for the service'
+      $shortcut.Save()
+      Log "desktop shortcut: $DesktopLink"
+    }
+    [IO.File]::WriteAllText($DesktopMark, $DesktopLink)
+  } catch { Log "no desktop shortcut: $($_.Exception.Message)" }
+}
+
 # Keep the PC awake while a job runs; Windows sleeping mid-scan loses the job.
 Add-Type -Namespace LocalGmapWorker -Name Power -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint flags);'
 function Stay-Awake([bool]$On) {
