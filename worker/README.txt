@@ -20,7 +20,7 @@ START
 NEEDS
   Windows 10 or 11. Nothing to install and no browser: it uses Windows
   PowerShell, which Windows already has, and almost no memory. For web pages
-  and PDFs it downloads its own copy of Python on first start (about 300 MB, into
+  and PDFs it downloads its own copy of Python on first start (about 220 MB, into
   %LOCALAPPDATA%\LocalGmapWorker\python). That changes nothing else on the PC.
 
 HOW IT WORKS

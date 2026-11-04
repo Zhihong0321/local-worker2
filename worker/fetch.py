@@ -31,7 +31,7 @@ MAX_BYTES = 5 * 1024 * 1024
 # A PDF cut short does not open, so it may be bigger; past this it fails whole.
 MAX_PDF_BYTES = 30 * 1024 * 1024
 MAX_PDF_PAGES = 300
-PDF_BATCH = 5
+PDF_BATCH = 10
 MAX_REDIRECTS = 5
 # Page chrome a reader leaves out, like Jina Reader and Tavily extract do.
 CHROME_TAGS = ('nav', 'header', 'footer', 'aside', 'form', 'iframe', 'dialog')
@@ -104,6 +104,9 @@ def read_pdf(raw, fmt, deadline):
         import pymupdf4llm
     except ImportError:
         raise Refused('this worker cannot read PDFs yet: its PDF reader is still being set up')
+    # Its plain table finder, not the layout model: on the MICPA list on 2026-11-04 the
+    # same 5 tables and 91 rows in 0.4 s a page against 9.6, and cleaner cells.
+    pymupdf4llm.use_layout(False)
     try:
         doc = pymupdf.open(stream=raw, filetype='pdf')
     except Exception as e:
@@ -119,7 +122,7 @@ def read_pdf(raw, fmt, deadline):
             parts = [doc[i].get_text() for i in range(last)]
             done = last
         else:
-            # About 1.2 s a page on 2026-11-04: a long PDF stops at the deadline with the pages it has.
+            # About 0.4 s a page on 2026-11-04: a long PDF stops at the deadline with the pages it has.
             while done < last and time.time() < deadline:
                 batch = list(range(done, min(done + PDF_BATCH, last)))
                 parts.append(pymupdf4llm.to_markdown(doc, pages=batch))

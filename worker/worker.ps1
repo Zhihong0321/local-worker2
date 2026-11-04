@@ -429,9 +429,11 @@ $FetchPackages = @('scrapling==0.5', 'curl_cffi==0.17.0', 'markdownify==1.2.3')
 $FetchStamp = Join-Path $PyDir 'installed.txt'
 $script:FetchReady = $false
 $script:NextSetup = Get-Date
-# The PDF reader, on its own: about 245 MB (PyMuPDF and its layout model), so a
-# failure here leaves web pages working.
-$PdfPackages = @('pymupdf4llm==2.1', 'pymupdf==2.1', 'pymupdf_layout==2.1')
+# The PDF reader, on its own, so a failure here leaves web pages working. Without
+# its declared dependencies: fetch.py turns pymupdf4llm's layout model off, so
+# pymupdf_layout, onnxruntime and networkx are left out (161 MB, not 245).
+# numpy, tabulate and psutil are what it still imports.
+$PdfPackages = @('pymupdf4llm==2.1', 'pymupdf==2.1', 'numpy==2.5.4', 'tabulate==0.10.0', 'psutil==7.2.2')
 $PdfStamp = Join-Path $PyDir 'pdf-installed.txt'
 $script:PdfReady = $false
 $script:NextPdfSetup = Get-Date
@@ -475,9 +477,9 @@ function Install-Fetcher {
 function Install-PdfReader {
   $want = $PdfPackages -join ' '
   if ((Test-Path $PdfStamp) -and ([IO.File]::ReadAllText($PdfStamp).Trim() -eq $want)) { return $true }
-  Log 'setting up PDF reading: PyMuPDF, about 245 MB, once'
+  Log 'setting up PDF reading: PyMuPDF, about 160 MB, once'
   try {
-    & $PyExe -m pip install --quiet --disable-pip-version-check --no-warn-script-location @PdfPackages
+    & $PyExe -m pip install --quiet --disable-pip-version-check --no-warn-script-location --no-deps @PdfPackages
     if ($LASTEXITCODE) { throw "pip exited $LASTEXITCODE" }
     & $PyExe -I -c 'import pymupdf, pymupdf4llm'
     if ($LASTEXITCODE) { throw 'the packages installed but do not load' }

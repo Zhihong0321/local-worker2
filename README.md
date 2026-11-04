@@ -95,7 +95,7 @@ the same call unless `wait` says otherwise.
 
 `result`: `{ url, finalUrl, status, contentType, title, format, content,
 length, truncated, provider: "scrapling-local", tookMs, worker }`. PDFs come
-back as markdown with tables (pymupdf4llm), about 1.2 s a page; past the
+back as markdown with tables (pymupdf4llm), about 0.4 s a page; past the
 deadline the pages read so far, `truncated: true`. Limits 30 MB, 300 pages, no
 OCR. HTTP 400+, another kind of file or a private address fails the job. No browser, so content
 only JavaScript draws is missing.
@@ -122,7 +122,7 @@ only JavaScript draws is missing.
 - **Fetches.** The worker sets up its own Python 3.12 (embeddable build) and
   `scrapling`, `curl_cffi`, `markdownify` under `%LOCALAPPDATA%\LocalGmapWorker\python`
   on first start, about 60 MB from python.org and PyPI (40 s on 2026-11-04),
-  then the PDF reader (`pymupdf4llm`, about 245 MB, 75 s) as its own step: if
+  then the PDF reader (`pymupdf4llm` without its layout model, about 160 MB) as its own step: if
   only that fails, web pages still work and PDF jobs fail until it is retried.
   pymupdf4llm is AGPL-3.0 (Artifex sells a commercial licence).
   Until that works (retried hourly) it takes scans only. Each hop of a fetch,
