@@ -98,12 +98,25 @@ function health(id) {
   return handlerHealth.get(id) ?? { state: 'unknown', last_ok: null, last_fail: null, last_reason: null, checked_at: null };
 }
 
-function markHealth(id, ok, reason, at = now()) {
+/**
+ * `state` null is an ordinary lookup: an answer moves `unknown` to `ok`, a failure is recorded but judges nothing
+ * (one slow or refused page is not a broken handler). `broken` stays until a canary passes or a redeploy.
+ */
+function markHealth(id, ok, reason, state, at = now()) {
   const previous = health(id);
+  const next = state ?? (ok && previous.state === 'unknown' ? 'ok' : previous.state);
   handlerHealth.set(id, {
-    state: ok ? 'ok' : 'broken', last_ok: ok ? at : previous.last_ok,
-    last_fail: ok ? previous.last_fail : at, last_reason: reason ?? null, checked_at: at,
+    state: next, last_ok: ok ? at : previous.last_ok,
+    last_fail: ok ? previous.last_fail : at, last_reason: ok ? null : reason ?? null,
+    checked_at: next !== previous.state || state ? at : previous.checked_at,
   });
+}
+
+/** A pdf handler's work ends at the PDF address (web.fetch reads it), so `reason: 'pdf'` is its normal answer. */
+function answered(job, answer) {
+  if (job.status !== 'done' || answer?.reason === 'layout_changed') return false;
+  if (['found', 'not_found'].includes(answer?.status)) return true;
+  return !!handlers.get(job.payload.handler)?.pdf && answer?.reason === 'pdf';
 }
 
 function lookupPayload(handler, keyword, worker) {
@@ -123,12 +136,16 @@ function runnable(handler) { return handler.tier === 1 || handler.tier === 2; }
 
 function updateLookupHealth(job) {
   const answer = job.result?.result;
-  const ok = job.status === 'done' && ['found', 'not_found'].includes(answer?.status) && answer?.reason !== 'layout_changed';
-  markHealth(job.payload.handler, ok, job.error || answer?.reason || (ok ? null : 'invalid handler result'), job.finishedAt);
+  const ok = answered(job, answer);
+  // Only layout_changed or a failed canary marks a handler broken; other failures are recorded, not judged.
+  const broke = job.status === 'done' && answer?.reason === 'layout_changed';
+  markHealth(job.payload.handler, ok, job.error || answer?.reason || (ok ? null : 'invalid handler result'),
+    broke ? 'broken' : null, job.finishedAt);
   if (!job.check || job.check.run !== checkRun?.id) return;
   const verdict = checkRun.handlers.find((h) => h.handler === job.payload.handler);
   const side = job.check.side;
-  const passed = ok && answer.status === side && (side !== 'found' || (Array.isArray(answer.records) && answer.records.length > 0));
+  const pdf = ok && answer.reason === 'pdf';
+  const passed = ok && (pdf || (answer.status === side && (side !== 'found' || (Array.isArray(answer.records) && answer.records.length > 0))));
   verdict[side] = {
     job: job.id, state: passed ? 'ok' : 'broken',
     reason: passed ? null : job.error || answer?.reason || `expected ${side}${side === 'found' ? ' with at least one record' : ''}; got ${answer?.status ?? 'no status'}`,
@@ -138,7 +155,7 @@ function updateLookupHealth(job) {
   verdict.state = pending ? 'pending' : failed.length ? 'broken' : 'ok';
   verdict.reason = failed.map((s) => `${s}: ${verdict[s].reason}`).join('; ') || null;
   // A passing half cannot erase the other half's failure.
-  if (failed.length || !pending) markHealth(verdict.handler, !failed.length, verdict.reason, job.finishedAt);
+  if (failed.length || !pending) markHealth(verdict.handler, !failed.length, verdict.reason, failed.length ? 'broken' : 'ok', job.finishedAt);
   summarizeCheck();
 }
 
@@ -169,7 +186,7 @@ function startCheck(selected) {
     if (failed.length) {
       verdict.reason = failed.map((s) => `${s}: ${verdict[s].reason}`).join('; ');
       if (!['found', 'not_found'].some((s) => verdict[s].state === 'pending')) verdict.state = 'broken';
-      markHealth(handler.id, false, verdict.reason);
+      markHealth(handler.id, false, verdict.reason, 'broken');
     }
   }
   summarizeCheck();
@@ -348,7 +365,9 @@ function waitFor(job, ms, res) {
 }
 
 function take(worker, types, waitMs, res) {
-  const ready = [...jobs.values()].find((j) => claimable(j, worker, types));
+  // A caller is usually holding the line; the canary run's lookups can wait behind it.
+  const list = [...jobs.values()].filter((j) => claimable(j, worker, types));
+  const ready = list.find((j) => !j.check) ?? list[0];
   if (ready) return Promise.resolve(lease(ready, worker));
   if (waitMs <= 0) return Promise.resolve(null);
   return new Promise((resolve) => {

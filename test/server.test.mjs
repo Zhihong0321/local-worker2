@@ -319,13 +319,14 @@ test('layout_changed is a normal result that immediately marks handler health br
   assert.equal(entry.health.checked_at, done.finishedAt);
 });
 
-test('failed lookup records its error and later successful lookup recovers health', async () => {
+test('a failed lookup is recorded but does not judge; broken stays until a canary passes', async () => {
   for (const failure of [true, false]) {
     await postLookup(lookupA, { worker: 'pc-health' });
     const { job } = await (await pollLookup('pc-health')).json();
     await answerLookup(job, notFound, failure ? { ok: false, error: 'handler threw: test error' } : {});
     const entry = (await (await call('/api/handlers', api)).json()).handlers.find((h) => h.id === lookupA);
-    assert.equal(entry.health.state, failure ? 'broken' : 'ok');
+    // The layout_changed test above left it broken; the canary test below clears it.
+    assert.equal(entry.health.state, 'broken');
     assert.equal(entry.health.last_reason, failure ? 'handler threw: test error' : null);
     assert.ok(entry.health.last_fail);
   }
