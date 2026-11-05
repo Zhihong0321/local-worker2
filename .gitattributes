@@ -1,2 +1,6 @@
 * text=auto eol=lf
 *.cmd text eol=crlf
+
+# Handler files are copied byte for byte from the probe and their sha256 is in handlers/index.json.
+# No newline or encoding conversion, on any OS, or the versions stop matching the files.
+handlers/** -text

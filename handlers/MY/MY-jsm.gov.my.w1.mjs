@@ -1,0 +1,18 @@
+export const meta={task:'MY-jsm.gov.my',want:'w1',tier:2,method:'form_post',input:'certification body or laboratory name',fields:['name','organisation_details','programme_field','status','accreditation_number','scope_url'],canary:{found:'ADVANCED MATERIALS TESTING LABORATORY SIRIM INDUSTRIAL RESEARCH',not_found:'Dezeno'}};
+const base='https://cab.jsm.gov.my/cab-directories/';let last=0;
+const clean=s=>s.replace(/<[^>]*>/g,' ').replace(/&nbsp;|&emsp;/g,' ').replace(/&amp;/g,'&').replace(/&#0*39;/g,"'").replace(/\s+/g,' ').trim();const norm=s=>s.toLowerCase().replace(/[^a-z0-9]/g,'');
+async function request(url,options={}){await new Promise(r=>setTimeout(r,Math.max(0,1100-(Date.now()-last))));last=Date.now();const r=await fetch(url,{...options,headers:{'user-agent':'Mozilla/5.0',...options.headers},signal:AbortSignal.timeout(25000)});return {r,text:await r.text()};}
+export default async function lookup(keyword){
+ let source_url=base+'result';const fail=(reason,excerpt='')=>({status:'couldnt_check',reason,records:[],source_url,excerpt:excerpt.slice(0,500)});
+ try{const {r,text}=await request(source_url,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({nameScheme:keyword})});if(/cf-chl-|verify you are human|captcha/i.test(text))return fail('blocked');if(!r.ok)return fail('http_error',String(r.status));if(!text.includes('JSM Search Accredited Organisation')||!text.includes('Company Name :'))return fail('layout_changed');
+ if(text.includes('Sorry, there are no results were found for:'))return {status:'not_found',reason:'',records:[],source_url,excerpt:clean(text.match(/Sorry,[\s\S]*?<\/div>/)?.[0]||'No results').slice(0,500)};
+ const count=text.match(/Found\s*:\s*<strong>(\d+)<\/strong>\s*Record/);if(!count||!text.includes('<th>Organisation</th>'))return fail('layout_changed');
+ const rows=[...text.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map(m=>m[1]).filter(s=>s.includes('viewScope?'));if(rows.length!==+count[1])return fail('layout_changed','Incomplete organisation table');
+ const candidates=rows.filter(row=>[...row.matchAll(/<strong>([\s\S]*?)<\/strong>/g)].some(m=>norm(clean(m[1])).includes(norm(keyword))));if(candidates.length>12)return fail('other','Company query too broad');
+ let records=[];for(const row of candidates){const cell=row.match(/<td class="table-plus">([\s\S]*?)<\/td>/)?.[1];const name=[...cell.matchAll(/<strong>([\s\S]*?)<\/strong>/g)].map(m=>clean(m[1])).filter(v=>!/:$/.test(v)).join(' ');const path=row.match(/window.location.href='([^']+)'/)?.[1];if(!path)return fail('layout_changed');source_url=new URL(path.replace(/&amp;/g,'&'),base).href;
+ const detail=await request(source_url);if(!detail.r.ok)return fail('http_error',String(detail.r.status));if(!detail.text.includes('Status/'))return fail('layout_changed');
+ for(const m of detail.text.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)){const cells=[...m[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)].map(x=>x[1]);if(cells.length===3&&cells[2].includes('badge')){const status=clean(cells[2].match(/<span[^>]*class="badge[^"]*"[^>]*>([\s\S]*?)<\/span>/)?.[1]||'');const a=cells[2].match(/<a href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/);if(status==='ACCREDITED')records.push({name,organisation_details:clean(cell),programme_field:clean(cells[1]),status,accreditation_number:a?clean(a[2]):'',scope_url:a?new URL(a[1],base).href:source_url});}}
+ if(records.length)break;}
+ return {status:records.length?'found':'not_found',reason:'',records,source_url,excerpt:records.length?JSON.stringify(records).slice(0,500):'Complete directory search contained no accredited matching body/laboratory.'};
+ }catch(e){return fail(e.name==='TimeoutError'?'timeout':'http_error',String(e));}
+}

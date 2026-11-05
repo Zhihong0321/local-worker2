@@ -1,0 +1,10 @@
+export const meta={task:'KR-kakaobusiness.gitbook.io',want:'w1',tier:1,method:'static_list',input:'company name',fields:['name','phone','website','products','kpp'],canary:{found:'애드이피션시',not_found:'이상한 마케팅'},notes:'Reports published 2026 roster contacts and KPP. Cross-site contact comparisons require separate evidence.'};
+const url='https://kakaobusiness.gitbook.io/main/partner/list';
+const clean=s=>s.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,' ').replace(/<[^>]*>/g,' ').replace(/&nbsp;|&#160;/g,' ').replace(/&amp;/g,'&').replace(/\s+/g,' ').trim();
+const norm=s=>s.normalize('NFKC').replace(/주식회사|\(주\)|㈜|\s+/g,'').toLowerCase();
+export default async function lookup(keyword){const base={records:[],source_url:url,excerpt:''};try{const r=await fetch(url,{headers:{'user-agent':'Mozilla/5.0'},signal:AbortSignal.timeout(30000)});const h=await r.text();if(/cf-chl-|captcha|verify you are human/i.test(h))return {...base,status:'couldnt_check',reason:'blocked'};if(!r.ok)return {...base,status:'couldnt_check',reason:'http_error'};
+if(!clean(h).includes('2026년 공식 대행사 리스트')||!h.includes('role="table"'))return {...base,status:'couldnt_check',reason:'layout_changed'};
+const rows=h.split(/<div role="cell"[^>]*>/).slice(1).map(c=>{const text=clean(c);return {name:clean(c.match(/<strong\b[^>]*>([\s\S]*?)<\/strong>/)?.[1]||''),phone:text.match(/📞\s*([\d\s-]+)/)?.[1]?.trim()||'',website:c.match(/href="(https?:[^\"]+)"/)?.[1]||'',products:text.match(/✔\s*([^📞📧📍]+?)(?:이전|KPP ㄱ|$)/)?.[1]?.trim()||'',kpp:/<i\b[\s\S]*?>\s*(?:<span[^>]*>)?KPP/.test(c.slice(0,c.indexOf('📞')))};}).filter(x=>x.name&&x.phone);
+if(rows.length<10)return {...base,status:'couldnt_check',reason:'layout_changed'};if(!norm(String(keyword)))return {...base,status:'couldnt_check',reason:'other'};
+const records=rows.filter(x=>norm(x.name)===norm(String(keyword)));return {...base,status:records.length?'found':'not_found',reason:'',records,excerpt:records.map(x=>JSON.stringify(x)).join(' | ').slice(0,500)};
+}catch(e){return {...base,status:'couldnt_check',reason:e.name==='TimeoutError'?'timeout':'other'};}}

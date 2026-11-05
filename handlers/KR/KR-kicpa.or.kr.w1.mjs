@@ -1,0 +1,8 @@
+export const meta={task:'KR-kicpa.or.kr',want:'w1',tier:1,method:'static_list',input:'company name',fields:['name','accountant','authority','measure','disciplinary_reason','period'],canary:{found:'신한회계법인',not_found:'세무법인 혜움'}};
+const clean=s=>s.replace(/<!--[\s\S]*?-->/g,'').replace(/<[^>]+>/g,' ').replace(/&nbsp;/g,' ').replace(/\s+/g,' ').trim();const norm=s=>s.replace(/\s+/g,'');
+export default async function lookup(keyword){const source_url='https://www.kicpa.or.kr/web/etc/punish/list.jsp';const out=(status,reason='',records=[],excerpt='')=>({status,reason,records,source_url,excerpt});try{
+await new Promise(r=>setTimeout(r,1100));const r=await fetch(source_url,{headers:{'user-agent':'Mozilla/5.0'},signal:AbortSignal.timeout(30000)});const h=await r.text();if(/captcha|cf-chl-|just a moment/i.test(h))return out('couldnt_check','blocked');if(!r.ok)return out('couldnt_check','http_error');if(!h.includes('개인 징계 정보 열람')||!h.includes('징계효력'))return out('couldnt_check','layout_changed');
+const rows=[...h.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(m=>[...m[1].replace(/<!--[\s\S]*?-->/g,'').matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map(x=>clean(x[1]))).filter(c=>c.length===7&&/^\d+$/.test(c[0]));
+const total=Number(h.match(/총\s*(\d+)\s*건/)?.[1]);if(!Number.isFinite(total)||rows.length!==total)return out('couldnt_check','layout_changed');
+const records=rows.map(c=>({name:c[2],accountant:c[1],authority:c[3],measure:c[4],disciplinary_reason:c[5],period:c[6]})).filter(x=>norm(x.name.split('(')[0])===norm(keyword));return out(records.length?'found':'not_found','',records,records.length?JSON.stringify(records).slice(0,500):`${total} current rows inspected`);
+}catch(e){return out('couldnt_check',e.name==='TimeoutError'?'timeout':'other')}}

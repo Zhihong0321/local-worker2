@@ -1,0 +1,5 @@
+export const meta={task:'KR-karb.or.kr',want:'w1',tier:1,method:'static_list',pdf:true,input:'company name',fields:[],canary:{found:'애드이피션시',not_found:'이상한 마케팅'}};
+export default async function lookup(keyword){
+ const source_url='https://www.karb.or.kr/uploads/Info/20260609110524_6a2774e42e5fa.pdf';
+ try{const r=await fetch(source_url,{headers:{'user-agent':'Mozilla/5.0'},signal:AbortSignal.timeout(25000)});if(!r.ok)return {status:'couldnt_check',reason:'http_error',records:[],source_url,excerpt:`HTTP ${r.status}`};const b=new Uint8Array(await r.arrayBuffer());if(new TextDecoder().decode(b.slice(0,5))!=='%PDF-')return {status:'couldnt_check',reason:'layout_changed',records:[],source_url,excerpt:'Expected PDF header missing'};return {status:'couldnt_check',reason:'pdf',records:[],source_url,excerpt:'May 2026 print advertising review decisions. Search company in the attached monthly decision table. Presence is unverified; older monthly PDFs must also be checked.'};}catch(e){return {status:'couldnt_check',reason:e.name==='TimeoutError'?'timeout':'other',records:[],source_url,excerpt:String(e).slice(0,500)};}
+}
