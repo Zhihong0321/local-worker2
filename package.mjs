@@ -16,6 +16,7 @@ const FILES = [
   ['README.txt', 'README.txt'],
   ['worker.ps1', 'app/worker.ps1'],
   ['fetch.py', 'app/fetch.py'],
+  ['run-handler.mjs', 'app/run-handler.mjs'],
   ['linkedin_job.py', 'app/linkedin_job.py'],
   ['linkedin_login.py', 'app/linkedin_login.py'],
   ['linkedin_signin.ps1', 'app/linkedin_signin.ps1'],

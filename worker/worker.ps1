@@ -584,6 +584,131 @@ function Invoke-Fetch($Job) {
   } finally { Remove-Item $file -Force -ErrorAction SilentlyContinue }
 }
 
+# -------------------------------------------------------------- site lookup
+
+# Pinned from nodejs.org/dist/index.json and this release's SHASUMS256.txt.
+$NodeVersion = 'v24.22.2'
+$NodeSha256 = 'ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2'
+$NodeDir = Join-Path $Data 'node'
+$NodeExe = Join-Path $NodeDir 'node.exe'
+$NodeStamp = Join-Path $NodeDir 'installed.txt'
+$LookupRunner = Join-Path $PSScriptRoot 'run-handler.mjs'
+$script:NodeReady = $false
+$script:NextNodeSetup = Get-Date
+$script:NodeSetup = $null
+
+# Portable Node, once. Failure only disables lookup; retry in an hour.
+function Install-Node {
+  $zip = Join-Path $Data 'node.zip'
+  $archive = $null
+  try {
+    if ((Test-Path -LiteralPath $NodeExe) -and (Test-Path -LiteralPath $NodeStamp) -and ([IO.File]::ReadAllText($NodeStamp).Trim() -eq $NodeVersion)) { return $true }
+    Log "setting up site lookup: portable Node $NodeVersion, once"
+    New-Item -ItemType Directory -Force $NodeDir | Out-Null
+    $client = New-Object Net.WebClient
+    try { $client.DownloadFile("https://nodejs.org/dist/$NodeVersion/node-$NodeVersion-win-x64.zip", $zip) }
+    finally { $client.Dispose() }
+    if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $NodeSha256) { throw 'Node download SHA256 mismatch' }
+    # Only the runtime is needed; do not install npm or change the PC's PATH.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($zip)
+    $entry = $archive.GetEntry("node-$NodeVersion-win-x64/node.exe")
+    if (-not $entry) { throw 'Node archive has no runtime' }
+    [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $NodeExe, $true)
+    $actual = & $NodeExe --version
+    if ($LASTEXITCODE -or $actual -ne $NodeVersion) { throw 'Node runtime version check failed' }
+    [IO.File]::WriteAllText($NodeStamp, $NodeVersion)
+    Log 'site lookup is ready'
+    return $true
+  } catch {
+    Log "site lookup is off for now: setup failed ($($_.Exception.Message)). Trying again in an hour."
+    return $false
+  } finally {
+    if ($archive) { $archive.Dispose() }
+    Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+  }
+}
+
+# Setup runs in the background so downloads never hold up other job types.
+function Update-NodeSetup {
+  if ($script:NodeSetup -and $script:NodeSetup.State -in 'Completed', 'Failed', 'Stopped') {
+    $answer = @(Receive-Job $script:NodeSetup -ErrorAction SilentlyContinue)
+    $script:NodeReady = $script:NodeSetup.State -eq 'Completed' -and $answer.Count -gt 0 -and $answer[-1] -eq $true
+    Remove-Job $script:NodeSetup -Force
+    $script:NodeSetup = $null
+    $script:NextNodeSetup = (Get-Date).AddHours(1)
+  }
+  if (-not $script:NodeReady -and -not $script:NodeSetup -and (Get-Date) -ge $script:NextNodeSetup) {
+    $script:NextNodeSetup = (Get-Date).AddHours(1)
+    try {
+      $settings = @{ Data = $Data; LogFile = $LogFile; NodeVersion = $NodeVersion; NodeSha256 = $NodeSha256; NodeDir = $NodeDir; NodeExe = $NodeExe; NodeStamp = $NodeStamp }
+      $script:NodeSetup = Start-Job -ArgumentList $settings, ${function:Install-Node}.ToString(), ${function:Log}.ToString() -ScriptBlock {
+        param($settings, $install, $logger)
+        $ErrorActionPreference = 'Stop'
+        $ProgressPreference = 'SilentlyContinue'
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        foreach ($key in $settings.Keys) { Set-Variable -Name $key -Value $settings[$key] }
+        Set-Item Function:Log ([scriptblock]::Create($logger))
+        Set-Item Function:Install-Node ([scriptblock]::Create($install))
+        Install-Node
+      }
+    } catch { Log "site lookup setup could not start: $($_.Exception.Message). Trying again in an hour." }
+  }
+}
+
+# Windows argv quoting: preserve embedded quotes and trailing backslashes.
+function Quote-NodeArgument([string]$Value) {
+  return '"' + ([regex]::Replace($Value, '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1') + '"'
+}
+
+# One site.lookup job. The handler's return value is passed through unchanged.
+function Invoke-Lookup($Job) {
+  $watch = [Diagnostics.Stopwatch]::StartNew()
+  $p = $Job.payload
+  $file = Join-Path $Data ('lookup-' + [guid]::NewGuid().ToString('N') + '.mjs')
+  $proc = $null
+  try {
+    [IO.File]::WriteAllText($file, [string]$p.source, (New-Object Text.UTF8Encoding $false))
+    $psi = New-Object Diagnostics.ProcessStartInfo $NodeExe
+    $args_ = @('--permission', "--allow-fs-read=$file", "--allow-fs-read=$LookupRunner", $LookupRunner, $file, [string]$p.keyword)
+    $psi.Arguments = ($args_ | ForEach-Object { Quote-NodeArgument $_ }) -join ' '
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [Text.Encoding]::UTF8
+    # Do not pass worker credentials or inherited NODE_OPTIONS to a handler.
+    $psi.EnvironmentVariables.Clear()
+    $psi.EnvironmentVariables['SystemRoot'] = $env:SystemRoot
+    $proc = [Diagnostics.Process]::Start($psi)
+    # Both streams at once: a full stderr pipe would stall the child.
+    $out = $proc.StandardOutput.ReadToEndAsync()
+    $err = $proc.StandardError.ReadToEndAsync()
+    if (-not $proc.WaitForExit([int]$Job.timeoutMs)) {
+      try { $proc.Kill(); $proc.WaitForExit() } catch { }
+      throw "timed out after $([int]$Job.timeoutMs) ms"
+    }
+    $proc.WaitForExit()
+    # The answer is the last line: a handler that prints must not break it.
+    $line = @($out.Result.Trim() -split "`r?`n")[-1]
+    if (-not $line) { throw 'handler printed nothing' }
+    try { $r = $line | ConvertFrom-Json } catch { throw 'handler runner returned invalid JSON' }
+    if ($r.ok -eq $false) { throw "handler threw: $($r.error)" }
+    if ($r.ok -ne $true) { throw 'handler runner returned an invalid answer' }
+    return [ordered]@{
+      handler = $p.handler; version = $p.version; worker = $Name
+      tookMs = [long]$watch.ElapsedMilliseconds; meta = $r.meta; result = $r.result
+    }
+  } finally {
+    if ($proc) {
+      if (-not $proc.HasExited) { try { $proc.Kill(); $proc.WaitForExit() } catch { } }
+      $proc.Dispose()
+    }
+    Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+  }
+}
+
 # ------------------------------------------------------------------ results
 
 # Post a result, retrying the service for a few minutes. If it never takes it,
@@ -639,11 +764,12 @@ function Send-Unsaved {
 
 Log "Local Gmap Worker '$Name' -> $Lab (Google Maps list pages, $PaceMs ms apart; web pages $(if ($FetchOn) { 'on' } else { 'off' }))"
 $backoff = 5
-# While Google rests this line, take only web.fetch jobs, or nothing.
+# While Google rests this line, keep taking the other ready job types.
 $restUntil = Get-Date
 while ($true) {
   try {
     Send-Unsaved
+    Update-NodeSetup
     if ($FetchOn -and -not $script:FetchReady -and (Get-Date) -ge $script:NextSetup) {
       $script:FetchReady = Install-Fetcher
       $script:NextSetup = (Get-Date).AddHours(1)
@@ -666,8 +792,14 @@ while ($true) {
     $resting = (Get-Date) -lt $restUntil
     if ($LinkedInState.state -eq 'session_expired' -and (Test-Path -LiteralPath $LinkedInSession) -and (Get-Item -LiteralPath $LinkedInSession).LastWriteTimeUtc.Ticks -gt $LinkedInState.sessionTicks) { $LinkedInState.state = 'ready'; $LinkedInState.until = 0 }
     if ($LinkedInState.state -eq 'rate_limited' -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -ge $LinkedInState.until) { $LinkedInState.state = 'ready'; $LinkedInState.until = 0 }
-    $script:Types = (@($(if (-not $resting) { 'gmap.scan' }), $(if ($script:FetchReady) { 'web.fetch' }), $(if ($script:LinkedInReady -and (Test-Path -LiteralPath $LinkedInSession) -and $LinkedInState.state -eq 'ready') { 'linkedin.scrape' })) | Where-Object { $_ }) -join ','
-    if (-not $script:Types) { Start-Sleep -Seconds ([Math]::Max(1, [int]($restUntil - (Get-Date)).TotalSeconds)); continue }
+    # Emit only ready types; empty subexpressions in an array stop PS 5.1's pipeline early.
+    $script:Types = (@(
+      if (-not $resting) { 'gmap.scan' }
+      if ($script:FetchReady) { 'web.fetch' }
+      if ($script:LinkedInReady -and (Test-Path -LiteralPath $LinkedInSession) -and $LinkedInState.state -eq 'ready') { 'linkedin.scrape' }
+      if ($script:NodeReady) { 'site.lookup' }
+    )) -join ','
+    if (-not $script:Types) { Start-Sleep -Seconds ([Math]::Min(25, [Math]::Max(1, [int]($restUntil - (Get-Date)).TotalSeconds))); continue }
     $r = Invoke-Hub 'GET' ("/api/jobs/next?worker=$([uri]::EscapeDataString($Name))&types=$($script:Types)&wait=25&linkedinState=$($LinkedInState.state)&linkedinCoolUntil=$($LinkedInState.until)") $null 45
     if ($r.status -eq 204) { $backoff = 5; continue }
     if ($r.status -eq 401 -or $r.status -eq 403) {
@@ -679,6 +811,22 @@ while ($true) {
     $job = ($r.body | ConvertFrom-Json).job
     $script:JobId = $job.id
     $script:LastBeat = (Get-Date).AddSeconds(-60)
+    if ($job.type -eq 'site.lookup') {
+      Log "job $($job.id): lookup $($job.payload.handler)"
+      $payload = @{}
+      foreach ($property in $job.payload.PSObject.Properties) {
+        if ($property.Name -ne 'source') { $payload[$property.Name] = $property.Value }
+      }
+      try {
+        $result = Invoke-Lookup $job
+        Log "job $($job.id): lookup finished in $($result.tookMs) ms"
+        Send-Result $job.id $payload $true $result '' 0 'site.lookup'
+      } catch {
+        Log "job $($job.id) failed: $($_.Exception.Message)"
+        Send-Result $job.id $payload $false $null ([string]$_.Exception.Message) 0 'site.lookup'
+      } finally { $script:JobId = $null }
+      continue
+    }
     if ($job.type -eq 'linkedin.scrape') {
       $file = Join-Path $Data "linkedin-$($job.id).json"
       $paceStart = [DateTime]::UtcNow

@@ -31,16 +31,22 @@
 #
 # Standard library only: it runs before any package is installed.
 import datetime
+import concurrent.futures
 import fcntl
 import gzip
+import hashlib
 import json
 import os
+import platform
 import plistlib
 import re
+import shutil
 import socket
 import ssl
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -684,6 +690,116 @@ def invoke_fetch(job):
         file.unlink(missing_ok=True)
 
 
+# -------------------------------------------------------------- site lookup
+
+# Pinned from nodejs.org/dist/index.json and this release's SHASUMS256.txt.
+NodeVersion = 'v24.22.2'
+NodeHashes = {
+    'arm64': 'aa9549349e47dffaa42dcf95d6e06ade8c4bdafc980979883b88767670df385a',
+    'x64': 'd5e336d588c45be0c37dbd52cc29895593009ca4997a77a1fd02815131ed0e52',
+}
+NodeDir = DATA / 'node'
+NodeExe = NodeDir / 'bin' / 'node'
+NodeStamp = NodeDir / 'installed.txt'
+LookupRunner = SHARED / 'run-handler.mjs'
+NodeReady = False
+NextNodeSetup = time.time()
+NodeSetup = None
+NodeSetupPool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+
+# Portable Node, once. Failure only disables lookup; retry in an hour.
+def install_node():
+    archive_path = DATA / 'node.tar.gz'
+    try:
+        if NodeExe.exists() and NodeStamp.exists() and read_text(NodeStamp).strip() == NodeVersion:
+            return True
+        log(f'setting up site lookup: portable Node {NodeVersion}, once')
+        arch = {'arm64': 'arm64', 'x86_64': 'x64'}.get(platform.machine())
+        if not arch:
+            raise RuntimeError(f'unsupported Node architecture: {platform.machine()}')
+        NodeExe.parent.mkdir(parents=True, exist_ok=True)
+        base = f'node-{NodeVersion}-darwin-{arch}'
+        with urllib.request.urlopen(f'https://nodejs.org/dist/{NodeVersion}/{base}.tar.gz', timeout=60) as response:
+            with archive_path.open('wb') as target:
+                shutil.copyfileobj(response, target)
+        with archive_path.open('rb') as source:
+            digest = hashlib.file_digest(source, 'sha256').hexdigest()
+        if digest != NodeHashes[arch]:
+            raise RuntimeError('Node download SHA256 mismatch')
+        # Only the runtime is needed; do not install npm or change the Mac's PATH.
+        with tarfile.open(archive_path, 'r:gz') as archive:
+            member = archive.getmember(f'{base}/bin/node')
+            if not member.isfile():
+                raise RuntimeError('Node archive has no runtime')
+            with archive.extractfile(member) as source, NodeExe.open('wb') as target:
+                shutil.copyfileobj(source, target)
+        NodeExe.chmod(0o755)
+        check = subprocess.run([str(NodeExe), '--version'], capture_output=True, text=True, timeout=30)
+        if check.returncode or check.stdout.strip() != NodeVersion:
+            raise RuntimeError('Node runtime version check failed')
+        write_text(NodeStamp, NodeVersion)
+        log('site lookup is ready')
+        return True
+    except Exception as e:
+        log(f'site lookup is off for now: setup failed ({e}). Trying again in an hour.')
+        return False
+    finally:
+        archive_path.unlink(missing_ok=True)
+
+
+# Setup runs in the background so downloads never hold up other job types.
+def update_node_setup():
+    global NodeReady, NodeSetup, NextNodeSetup
+    if NodeSetup is not None and NodeSetup.done():
+        try:
+            NodeReady = NodeSetup.result() is True
+        except Exception as e:
+            log(f'site lookup setup failed: {e}. Trying again in an hour.')
+            NodeReady = False
+        NodeSetup = None
+        NextNodeSetup = time.time() + 3600
+    if not NodeReady and NodeSetup is None and time.time() >= NextNodeSetup:
+        NextNodeSetup = time.time() + 3600
+        try:
+            NodeSetup = NodeSetupPool.submit(install_node)
+        except Exception as e:
+            log(f'site lookup setup could not start: {e}. Trying again in an hour.')
+
+
+# One site.lookup job. The handler's return value is passed through unchanged.
+def invoke_lookup(job):
+    started = time.monotonic()
+    p = job.get('payload') or {}
+    file = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.mjs', prefix='lookup-', dir=DATA, delete=False) as source:
+            file = Path(source.name)
+            source.write(p['source'])
+        timeout_ms = to_int(job.get('timeoutMs'))
+        args = [str(NodeExe), '--permission', f'--allow-fs-read={file}', f'--allow-fs-read={LookupRunner}',
+                str(LookupRunner), str(file), p['keyword']]
+        # Both streams at once; do not pass worker credentials or NODE_OPTIONS.
+        line, err = run_job_script(args, timeout_ms, env={}, timeout_message=f'timed out after {timeout_ms} ms')
+        if not line:
+            raise RuntimeError('handler printed nothing')
+        try:
+            r = json.loads(line)
+        except ValueError:
+            raise RuntimeError('handler runner returned invalid JSON')
+        if isinstance(r, dict) and r.get('ok') is False:
+            raise RuntimeError(f"handler threw: {r.get('error', '')}")
+        if not isinstance(r, dict) or r.get('ok') is not True:
+            raise RuntimeError('handler runner returned an invalid answer')
+        return {
+            'handler': p.get('handler'), 'version': p.get('version'), 'worker': Name,
+            'tookMs': int((time.monotonic() - started) * 1000), 'meta': r.get('meta'), 'result': r.get('result'),
+        }
+    finally:
+        if file is not None:
+            file.unlink(missing_ok=True)
+
+
 # ------------------------------------------------------------------ results
 
 # Post a result, retrying the service for a few minutes. If it never takes it,
@@ -812,11 +928,12 @@ def main():
     global Types, JobId, LastBeat
     log(f"Local Gmap Worker '{Name}' -> {Lab} (Google Maps list pages, {PaceMs} ms apart; web pages {'on' if FetchOn else 'off'})")
     backoff = 5
-    # While Google rests this line, take only web.fetch jobs, or nothing.
+    # While Google rests this line, keep taking the other ready job types.
     rest_until = time.time()
     while True:
         try:
             send_unsaved()
+            update_node_setup()
             if FetchOn and not FetchReady and time.time() >= NextSetup:
                 FetchReady = install_fetcher()
                 NextSetup = time.time() + 3600
@@ -846,9 +963,10 @@ def main():
                 'gmap.scan' if not resting else None,
                 'web.fetch' if FetchReady else None,
                 'linkedin.scrape' if LinkedInReady and os.path.exists(LinkedInSession) and LinkedInState['state'] == 'ready' else None,
+                'site.lookup' if NodeReady else None,
             ) if t)
             if not Types:
-                time.sleep(max(1, int(rest_until - time.time())))
+                time.sleep(min(25, max(1, int(rest_until - time.time()))))
                 continue
             r = invoke_hub('GET', f"/api/jobs/next?worker={urllib.parse.quote(Name, safe='')}&types={Types}&wait=25"
                                   f"&linkedinState={LinkedInState['state']}&linkedinCoolUntil={LinkedInState['until']}", None, 45)
@@ -866,6 +984,19 @@ def main():
             JobId = job['id']
             LastBeat = time.monotonic() - 60
             payload = job.get('payload') or {}
+            if job.get('type') == 'site.lookup':
+                log(f"job {job['id']}: lookup {payload.get('handler')}")
+                posted_payload = {key: value for key, value in payload.items() if key != 'source'}
+                try:
+                    result = invoke_lookup(job)
+                    log(f"job {job['id']}: lookup finished in {result['tookMs']} ms")
+                    send_result(job['id'], posted_payload, True, result, '', 0, 'site.lookup')
+                except Exception as e:
+                    log(f"job {job['id']} failed: {e}")
+                    send_result(job['id'], posted_payload, False, None, str(e), 0, 'site.lookup')
+                finally:
+                    JobId = None
+                continue
             if job.get('type') == 'linkedin.scrape':
                 run_linkedin_job(job)
                 continue

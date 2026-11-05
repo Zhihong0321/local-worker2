@@ -50,7 +50,7 @@
 <h1>Local Gmap Worker API</h1>
 <p class="lead">Google Maps business scans, web page reads, and LinkedIn profile and company scraping as an API. Jobs run on Windows worker PCs and are posted back here.</p>
 <nav>
-  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#linkedin">LinkedIn</a><a href="#fetch">Fetch a page</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
+  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#linkedin">LinkedIn</a><a href="#fetch">Fetch a page</a><a href="#lookup">Site lookup</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
 </nav>
 
 <h2 id="base">Base URL</h2>
@@ -141,14 +141,83 @@ curl -X DELETE -H "Authorization: Bearer $API_KEY" "https://YOUR-SERVICE/api/lin
 <p><strong>PDFs</strong> come back as markdown, tables as markdown tables (<code>format: "text"</code> gives plain text). A PDF reads at about 0.4 s a page: past the fetch's deadline it returns the pages it has with <code>truncated: true</code>, so send a larger <code>timeoutMs</code> for very long ones. Limits: 30 MB and 300 pages. Scanned PDFs without a text layer come back nearly empty.</p>
 <p>A site answering HTTP 400 or above, another kind of file (image, Word) or a refused address fails the job with an <code>error</code>. Plain text and JSON come back as they are. Pages are read without a browser, so content drawn only by JavaScript is not there.</p>
 
+<h2 id="lookup">Site lookup</h2>
+<p><span class="ep">POST</span><span class="path">/api/lookup</span></p>
+<p>Run a library handler for a company name on a worker PC's internet connection. The handler's return value is preserved under <code>job.result.result</code>. The call waits for the answer by default.</p>
+<pre><code>curl -X POST https://YOUR-SERVICE/api/lookup \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"handler":"MY-cims.cidb.gov.my/w1","keyword":"Gamuda"}'</code></pre>
+<table>
+  <tr><th>Field</th><th>Meaning</th></tr>
+  <tr><td><code>handler</code></td><td>Required library id from <code>GET /api/handlers</code>. Only tiers 1 and 2 can run.</td></tr>
+  <tr><td><code>keyword</code></td><td>Required company name, 1 to 200 characters after trimming.</td></tr>
+  <tr><td><code>wait</code></td><td>Seconds to hold the request, up to 900. Default: the timeout plus 30 seconds. <code>0</code> returns <code>202</code> with the job at once.</td></tr>
+  <tr><td><code>timeoutMs</code></td><td>Integer from 10000 to 300000, default 150000. The worker has this long to run the handler. An ordinary lookup also fails if no worker claims it within this time in the queue.</td></tr>
+  <tr><td><code>worker</code></td><td>Optional worker name to pin the lookup to one PC.</td></tr>
+</table>
+<p>Returns <code>{ "job": ... }</code>: HTTP <code>200</code> when finished during the wait, otherwise <code>202</code>. Illustrative successful answer (records vary by handler):</p>
+<pre><code>{
+  "job": {
+    "id": "857ccca76cfe",
+    "type": "site.lookup",
+    "status": "done",
+    "result": {
+      "handler": "MY-cims.cidb.gov.my/w1",
+      "version": "0123456789ab",
+      "worker": "pc-office-1",
+      "tookMs": 2400,
+      "meta": { "task": "MY-cims.cidb.gov.my", "want": "w1", "tier": 2 },
+      "result": {
+        "status": "found",
+        "reason": null,
+        "records": [{ "name": "Gamuda" }],
+        "source_url": "https://cims.cidb.gov.my/",
+        "excerpt": "..."
+      }
+    },
+    "error": null
+  }
+}</code></pre>
+<p><code>version</code> is the first 12 hex characters of the handler file's SHA-256 hash. The hub sends the source with the job; the worker returns the handler's metadata and answer. <code>couldnt_check</code> and <code>reason: "layout_changed"</code> are normal handler results with <code>job.status: "done"</code>. A thrown error, timeout or missing runner output instead produces <code>job.status: "failed"</code> and <code>job.error</code>.</p>
+<table>
+  <tr><th>HTTP status</th><th>Meaning</th></tr>
+  <tr><td><code>404</code></td><td>Unknown handler id.</td></tr>
+  <tr><td><code>422</code></td><td>Empty or overlong keyword, or a tier 3/4 handler. A non-runnable answer includes <code>tier</code>, <code>tier4</code> (reason and evidence) and <code>browser_steps</code>.</td></tr>
+  <tr><td><code>400</code></td><td>Invalid timeout or malformed JSON.</td></tr>
+</table>
+<p>Poll with <code>GET /api/lookup/{id}?wait=60</code>; cancel with <code>DELETE /api/lookup/{id}</code>. An unknown job returns <code>404</code>; cancelling an already finished job returns <code>409</code>.</p>
+<p class="note">At most one lookup per host runs across all workers, including different handlers on the same host. Other lookups for that host queue until completion, cancellation or lease expiry; different hosts can run in parallel. Workers must explicitly request <code>site.lookup</code> in their poll types. Google cooldown does not block lookups.</p>
+
+<h3>Handler library and health</h3>
+<p><span class="ep">GET</span><span class="path">/api/handlers?country=MY&amp;host=cims.cidb.gov.my</span></p>
+<p>Returns <code>{ "handlers": [...] }</code> with index entries and no source text. Both filters are optional and match exactly. Every entry includes:</p>
+<pre><code>"health": {
+  "state": "unknown",
+  "last_ok": null,
+  "last_fail": null,
+  "last_reason": null,
+  "checked_at": null
+}</code></pre>
+<p>States are <code>unknown</code>, <code>ok</code> and <code>broken</code>; timestamps are ISO strings once checked. Every finished lookup updates health: <code>found</code> or <code>not_found</code> is successful; a failed job, <code>couldnt_check</code> or invalid answer records a failure and its reason. <code>layout_changed</code> marks it broken immediately. A later successful check can restore health.</p>
+
+<h3>Canary checks</h3>
+<p><span class="ep">POST</span><span class="path">/api/handlers/check</span></p>
+<pre><code>{ "handler": "MY-cims.cidb.gov.my/w1" }</code></pre>
+<p>Omit <code>handler</code> (send <code>{}</code>) to check every runnable handler. Returns <code>202</code> with <code>{ "run": ... }</code> and queues the two saved company names, <code>canary.found</code> and <code>canary.not_found</code>, for each handler. These jobs may wait up to 24 hours in the queue behind the per-host rule. A second check while one is running returns <code>409</code>; an unknown id returns <code>404</code>, and a tier 3/4 id returns <code>422</code>.</p>
+<p>A handler passes only when the positive company returns <code>found</code> with at least one record and the negative company returns <code>not_found</code>. Otherwise it is broken, with a reason naming the failed side.</p>
+<p><span class="ep">GET</span><span class="path">/api/handlers/check</span></p>
+<p>Returns the last run, or <code>{ "run": null }</code> before the first check. A run has <code>id</code>, <code>started</code>, <code>finished</code> (null while running), <code>counts: { ok, broken, pending }</code>, and <code>handlers</code> containing each handler's verdict, reason, and both sides' job ids and outcomes.</p>
+<p class="note">The hub starts a check every 24 hours by default, skipping a tick while a check is still running. Set <code>HANDLER_CHECK_INTERVAL_MS</code> to change the interval, or <code>0</code> to disable it. Tests disable this timer. The library comes from <code>HANDLERS_DIR</code> (default <code>&lt;repo&gt;/handlers</code>); a missing library loads as zero handlers. Health and check runs are held in memory and cleared on redeploy.</p>
+
 <h2 id="get">Get, cancel and list jobs</h2>
 <h3><span class="ep">GET</span><span class="path">/api/scan/{id}?wait=60</span></h3>
-<p><code>/api/fetch/{id}</code> and <code>/api/linkedin/{id}</code> also retrieve jobs.</p>
+<p><code>/api/fetch/{id}</code>, <code>/api/linkedin/{id}</code> and <code>/api/lookup/{id}</code> also retrieve jobs.</p>
 <p>Returns the job. <code>wait</code> holds the request until it finishes, up to 900 seconds. <code>404</code> for an unknown id.</p>
 <h3><span class="ep">DELETE</span><span class="path">/api/scan/{id}</span></h3>
-<p>Cancels the job. <code>/api/fetch/{id}</code> and <code>/api/linkedin/{id}</code> also accept DELETE. <code>409</code> if it has already finished.</p>
+<p>Cancels the job. <code>/api/fetch/{id}</code>, <code>/api/linkedin/{id}</code> and <code>/api/lookup/{id}</code> also accept DELETE. <code>409</code> if it has already finished.</p>
 <h3><span class="ep">GET</span><span class="path">/api/scans?status=running</span></h3>
-<p>Recent jobs, up to 200, without results. <code>status</code> is optional: <code>pending</code>, <code>running</code>, <code>done</code> or <code>failed</code>. <code>type</code> is optional: <code>gmap.scan</code>, <code>web.fetch</code> or <code>linkedin.scrape</code>.</p>
+<p>Recent jobs, up to 200, without results. <code>status</code> is optional: <code>pending</code>, <code>running</code>, <code>done</code> or <code>failed</code>. <code>type</code> is optional: <code>gmap.scan</code>, <code>web.fetch</code>, <code>linkedin.scrape</code> or <code>site.lookup</code>.</p>
 
 <h2 id="other">Other routes</h2>
 <table>
@@ -162,7 +231,7 @@ curl -X DELETE -H "Authorization: Bearer $API_KEY" "https://YOUR-SERVICE/api/lin
 <h2 id="job">Job object</h2>
 <pre><code>{
   "id": "857ccca76cfe",
-  "type": "gmap.scan",       // gmap.scan | web.fetch | linkedin.scrape
+  "type": "gmap.scan",       // gmap.scan | web.fetch | linkedin.scrape | site.lookup
   "status": "done",          // pending | running | done | failed
   "worker": "pc-desktop-camhl16",
   "attempts": 1,
