@@ -95,7 +95,7 @@ function readHandlers() {
 }
 
 function health(id) {
-  return handlerHealth.get(id) ?? { state: 'unknown', last_ok: null, last_fail: null, last_reason: null, checked_at: null };
+  return handlerHealth.get(id) ?? { state: 'unknown', last_ok: null, last_fail: null, last_reason: null, broken_reason: null, checked_at: null };
 }
 
 /**
@@ -108,6 +108,8 @@ function markHealth(id, ok, reason, state, at = now()) {
   handlerHealth.set(id, {
     state: next, last_ok: ok ? at : previous.last_ok,
     last_fail: ok ? previous.last_fail : at, last_reason: ok ? null : reason ?? null,
+    // Why it broke stays readable while later ordinary lookups come and go.
+    broken_reason: next !== 'broken' ? null : state === 'broken' ? reason ?? null : previous.broken_reason,
     checked_at: next !== previous.state || state ? at : previous.checked_at,
   });
 }
@@ -139,9 +141,13 @@ function updateLookupHealth(job) {
   const ok = answered(job, answer);
   // Only layout_changed or a failed canary marks a handler broken; other failures are recorded, not judged.
   const broke = job.status === 'done' && answer?.reason === 'layout_changed';
-  markHealth(job.payload.handler, ok, job.error || answer?.reason || (ok ? null : 'invalid handler result'),
-    broke ? 'broken' : null, job.finishedAt);
-  if (!job.check || job.check.run !== checkRun?.id) return;
+  const canary = job.check && job.check.run === checkRun?.id;
+  // A canary is judged by its verdict below: an answer with the wrong status or no records is not a last_ok.
+  if (!canary || broke) {
+    markHealth(job.payload.handler, ok, job.error || answer?.reason || (ok ? null : 'invalid handler result'),
+      broke ? 'broken' : null, job.finishedAt);
+  }
+  if (!canary) return;
   const verdict = checkRun.handlers.find((h) => h.handler === job.payload.handler);
   const side = job.check.side;
   const pdf = ok && answer.reason === 'pdf';
@@ -265,10 +271,10 @@ function wake(job) {
   }
 }
 
+/** The host is free again: offer its queued lookups, callers' before the canary run's. */
 function wakeHost(host) {
-  for (const job of jobs.values()) {
-    if (job.type === LOOKUP && job.status === 'pending' && job.payload.host === host) wake(job);
-  }
+  const queued = [...jobs.values()].filter((j) => j.type === LOOKUP && j.status === 'pending' && j.payload.host === host);
+  for (const job of [...queued.filter((j) => !j.check), ...queued.filter((j) => j.check)]) wake(job);
 }
 
 /** Fetch and lookup callers usually hold the line; canaries can wait their turn. */

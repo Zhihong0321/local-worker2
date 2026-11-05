@@ -197,9 +197,10 @@ curl -X DELETE -H "Authorization: Bearer $API_KEY" "https://YOUR-SERVICE/api/lin
   "last_ok": null,
   "last_fail": null,
   "last_reason": null,
+  "broken_reason": null,
   "checked_at": null
 }</code></pre>
-<p>States are <code>unknown</code>, <code>ok</code> and <code>broken</code>; timestamps are ISO strings once checked. Every finished lookup updates health: <code>found</code> or <code>not_found</code> (and, for a <code>pdf</code> handler, <code>reason: "pdf"</code>) sets <code>last_ok</code> and moves <code>unknown</code> to <code>ok</code>; a failed job, <code>couldnt_check</code> or invalid answer sets <code>last_fail</code> and <code>last_reason</code> but does not change the state, since one slow or refused page is not a broken handler. <code>layout_changed</code> marks it <code>broken</code> immediately. Only a passing canary check turns a <code>broken</code> handler back to <code>ok</code>.</p>
+<p>States are <code>unknown</code>, <code>ok</code> and <code>broken</code>; timestamps are ISO strings once checked. Every finished lookup updates health: <code>found</code> or <code>not_found</code> (and, for a <code>pdf</code> handler, <code>reason: "pdf"</code>) sets <code>last_ok</code> and moves <code>unknown</code> to <code>ok</code>; a failed job, <code>couldnt_check</code> or invalid answer sets <code>last_fail</code> and <code>last_reason</code> but does not change the state, since one slow or refused page is not a broken handler. <code>layout_changed</code> marks it <code>broken</code> immediately. Only a passing canary check turns a <code>broken</code> handler back to <code>ok</code>. <code>last_reason</code> belongs to the latest result; <code>broken_reason</code> keeps why the handler broke until it is <code>ok</code> again.</p>
 
 <h3>Canary checks</h3>
 <p><span class="ep">POST</span><span class="path">/api/handlers/check</span></p>

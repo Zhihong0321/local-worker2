@@ -202,7 +202,7 @@ test('handler index has filters, no source and initially unknown health', async 
   assert.equal(handlers.length, 5);
   for (const handler of handlers) {
     assert.equal('source' in handler, false);
-    assert.deepEqual(handler.health, { state: 'unknown', last_ok: null, last_fail: null, last_reason: null, checked_at: null });
+    assert.deepEqual(handler.health, { state: 'unknown', last_ok: null, last_fail: null, last_reason: null, broken_reason: null, checked_at: null });
   }
   const filtered = await (await call('/api/handlers?country=MY&host=cims.cidb.gov.my', api)).json();
   assert.deepEqual(filtered.handlers.map((h) => h.id), [lookupA, lookupB]);
@@ -327,6 +327,7 @@ test('a failed lookup is recorded but does not judge; broken stays until a canar
     const entry = (await (await call('/api/handlers', api)).json()).handlers.find((h) => h.id === lookupA);
     // The layout_changed test above left it broken; the canary test below clears it.
     assert.equal(entry.health.state, 'broken');
+    assert.equal(entry.health.broken_reason, 'layout_changed');
     assert.equal(entry.health.last_reason, failure ? 'handler threw: test error' : null);
     assert.ok(entry.health.last_fail);
   }
