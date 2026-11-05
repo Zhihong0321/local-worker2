@@ -25,7 +25,8 @@ const KEY_LABEL = 'local-gmap-worker-v1';
 const SCAN = 'gmap.scan';
 const FETCH = 'web.fetch';
 const LINKEDIN = 'linkedin.scrape';
-const JOB_TYPES = [SCAN, FETCH, LINKEDIN];
+const LOOKUP = 'site.lookup';
+const JOB_TYPES = [SCAN, FETCH, LINKEDIN, LOOKUP];
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 const MIN_TIMEOUT_MS = 120_000;
@@ -38,6 +39,14 @@ const FETCH_MIN_TIMEOUT_MS = 10_000;
 const FETCH_MAX_TIMEOUT_MS = 300_000;
 const FETCH_LEASE_GRACE_MS = 30_000;
 const FETCH_FORMATS = ['markdown', 'text', 'html'];
+const LOOKUP_DEFAULT_TIMEOUT_MS = 150_000;
+const LOOKUP_MIN_TIMEOUT_MS = 10_000;
+const LOOKUP_MAX_TIMEOUT_MS = 300_000;
+const LOOKUP_LEASE_GRACE_MS = 30_000;
+// Canaries wait behind all earlier checks for their host, without a caller on the line.
+const LOOKUP_CHECK_QUEUE_TIMEOUT_MS = 24 * 3_600_000;
+const HANDLER_CHECK_INTERVAL_MS = Number(process.env.HANDLER_CHECK_INTERVAL_MS ?? 24 * 3_600_000);
+const HANDLERS_DIR = path.resolve(process.env.HANDLERS_DIR ?? path.join(import.meta.dirname, 'handlers'));
 /** A pending job no worker claims within this long fails, so a caller never waits forever. */
 const QUEUE_TIMEOUT_MS = Number(process.env.QUEUE_TIMEOUT_MS) || 1_800_000;
 /** Past this a job is poison, not unlucky: it has lost three workers. */
@@ -67,10 +76,111 @@ const workers = new Map();
 const waiters = [];
 /** Callers holding a request open until a job finishes, by job id. */
 const watchers = new Map();
+const handlers = readHandlers();
+const handlerHealth = new Map();
+let checkRun = null;
 
 const now = () => new Date().toISOString();
 const str = (v) => (typeof v === 'string' ? v : v == null ? '' : String(v));
 const newId = () => crypto.randomBytes(6).toString('hex');
+
+function readHandlers() {
+  try {
+    const index = JSON.parse(fs.readFileSync(path.join(HANDLERS_DIR, 'index.json'), 'utf8'));
+    return new Map(index.handlers.map(({ source, ...entry }) => [entry.id, entry]));
+  } catch (err) {
+    if (err.code === 'ENOENT') return new Map();
+    throw err;
+  }
+}
+
+function health(id) {
+  return handlerHealth.get(id) ?? { state: 'unknown', last_ok: null, last_fail: null, last_reason: null, checked_at: null };
+}
+
+function markHealth(id, ok, reason, at = now()) {
+  const previous = health(id);
+  handlerHealth.set(id, {
+    state: ok ? 'ok' : 'broken', last_ok: ok ? at : previous.last_ok,
+    last_fail: ok ? previous.last_fail : at, last_reason: reason ?? null, checked_at: at,
+  });
+}
+
+function lookupPayload(handler, keyword, worker) {
+  const file = path.resolve(HANDLERS_DIR, handler.file);
+  const relative = path.relative(HANDLERS_DIR, file);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('handler file is outside HANDLERS_DIR');
+  const bytes = fs.readFileSync(file);
+  const payload = {
+    handler: handler.id, version: crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 12),
+    host: handler.host, keyword, source: bytes.toString('utf8'),
+  };
+  if (worker) payload.worker = worker;
+  return payload;
+}
+
+function runnable(handler) { return handler.tier === 1 || handler.tier === 2; }
+
+function updateLookupHealth(job) {
+  const answer = job.result?.result;
+  const ok = job.status === 'done' && ['found', 'not_found'].includes(answer?.status) && answer?.reason !== 'layout_changed';
+  markHealth(job.payload.handler, ok, job.error || answer?.reason || (ok ? null : 'invalid handler result'), job.finishedAt);
+  if (!job.check || job.check.run !== checkRun?.id) return;
+  const verdict = checkRun.handlers.find((h) => h.handler === job.payload.handler);
+  const side = job.check.side;
+  const passed = ok && answer.status === side && (side !== 'found' || (Array.isArray(answer.records) && answer.records.length > 0));
+  verdict[side] = {
+    job: job.id, state: passed ? 'ok' : 'broken',
+    reason: passed ? null : job.error || answer?.reason || `expected ${side}${side === 'found' ? ' with at least one record' : ''}; got ${answer?.status ?? 'no status'}`,
+  };
+  const failed = ['found', 'not_found'].filter((s) => verdict[s].state === 'broken');
+  const pending = ['found', 'not_found'].some((s) => verdict[s].state === 'pending');
+  verdict.state = pending ? 'pending' : failed.length ? 'broken' : 'ok';
+  verdict.reason = failed.map((s) => `${s}: ${verdict[s].reason}`).join('; ') || null;
+  // A passing half cannot erase the other half's failure.
+  if (failed.length || !pending) markHealth(verdict.handler, !failed.length, verdict.reason, job.finishedAt);
+  summarizeCheck();
+}
+
+function summarizeCheck() {
+  checkRun.counts = { ok: 0, broken: 0, pending: 0 };
+  for (const verdict of checkRun.handlers) checkRun.counts[verdict.state]++;
+  if (!checkRun.counts.pending) checkRun.finished = now();
+}
+
+function startCheck(selected) {
+  checkRun = { id: newId(), started: now(), finished: null, counts: {}, handlers: [] };
+  for (const handler of selected) {
+    const verdict = { handler: handler.id, state: 'pending', reason: null };
+    checkRun.handlers.push(verdict);
+    for (const side of ['found', 'not_found']) {
+      try {
+        const keyword = str(handler.canary?.[side]).trim();
+        if (!keyword || keyword.length > 200) throw new Error('missing or invalid canary keyword');
+        const job = add(lookupPayload(handler, keyword), LOOKUP_DEFAULT_TIMEOUT_MS, newId(), LOOKUP);
+        job.check = { run: checkRun.id, side };
+        verdict[side] = { job: job.id, state: 'pending', reason: null };
+        wake(job);
+      } catch (err) {
+        verdict[side] = { job: null, state: 'broken', reason: err.message };
+      }
+    }
+    const failed = ['found', 'not_found'].filter((s) => verdict[s].state === 'broken');
+    if (failed.length) {
+      verdict.reason = failed.map((s) => `${s}: ${verdict[s].reason}`).join('; ');
+      if (!['found', 'not_found'].some((s) => verdict[s].state === 'pending')) verdict.state = 'broken';
+      markHealth(handler.id, false, verdict.reason);
+    }
+  }
+  summarizeCheck();
+  return checkRun;
+}
+
+if (HANDLER_CHECK_INTERVAL_MS > 0 && !process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') {
+  setInterval(() => {
+    if (!checkRun || checkRun.finished) startCheck([...handlers.values()].filter(runnable));
+  }, HANDLER_CHECK_INTERVAL_MS).unref();
+}
 
 function touch(name, ip) {
   const w = workers.get(name) ?? { name, firstSeen: now(), lastSeen: null, ip: null, coolUntil: 0, coolReason: null, done: 0, failed: 0 };
@@ -92,13 +202,19 @@ function settle(job) {
 }
 
 function finishJob(job, ok, result, error) {
+  if (job.type === LOOKUP && ok) {
+    result = { ...result, handler: result?.handler ?? job.payload.handler, version: result?.version ?? job.payload.version,
+      worker: result?.worker ?? job.worker, tookMs: result?.tookMs ?? Math.max(0, Date.now() - Date.parse(job.startedAt ?? job.createdAt)) };
+  }
   job.status = ok ? 'done' : 'failed';
   job.result = ok ? result : null;
   job.error = ok ? null : (error || 'failed');
   job.finishedAt = now();
   job.leaseUntil = null;
+  if (job.type === LOOKUP) updateLookupHealth(job);
   settle(job);
   evict();
+  if (job.type === LOOKUP) wakeHost(job.payload.host);
 }
 
 function evict() {
@@ -107,7 +223,9 @@ function evict() {
 }
 
 function claimable(job, worker, types) {
-  return job.status === 'pending' && types.includes(job.type) && (!job.payload.worker || job.payload.worker === worker);
+  return job.status === 'pending' && types.includes(job.type) && (!job.payload.worker || job.payload.worker === worker)
+    && (job.type !== LOOKUP || (Date.now() - Date.parse(job.createdAt) <= queueTimeout(job)
+      && ![...jobs.values()].some((j) => j.type === LOOKUP && j.status === 'running' && j.payload.host === job.payload.host)));
 }
 
 function lease(job, worker) {
@@ -115,7 +233,7 @@ function lease(job, worker) {
   job.worker = worker;
   job.attempts++;
   job.startedAt = now();
-  job.leaseUntil = Date.now() + job.timeoutMs + (job.type === FETCH ? FETCH_LEASE_GRACE_MS : LEASE_GRACE_MS);
+  job.leaseUntil = Date.now() + job.timeoutMs + (job.type === FETCH ? FETCH_LEASE_GRACE_MS : job.type === LOOKUP ? LOOKUP_LEASE_GRACE_MS : LEASE_GRACE_MS);
   return job;
 }
 
@@ -130,8 +248,17 @@ function wake(job) {
   }
 }
 
-/** A fetch's caller is usually holding the line: it fails within its own timeout. */
-function queueTimeout(job) { return job.type === FETCH ? job.timeoutMs : QUEUE_TIMEOUT_MS; }
+function wakeHost(host) {
+  for (const job of jobs.values()) {
+    if (job.type === LOOKUP && job.status === 'pending' && job.payload.host === host) wake(job);
+  }
+}
+
+/** Fetch and lookup callers usually hold the line; canaries can wait their turn. */
+function queueTimeout(job) {
+  if (job.type === LOOKUP) return job.check ? LOOKUP_CHECK_QUEUE_TIMEOUT_MS : job.timeoutMs;
+  return job.type === FETCH ? job.timeoutMs : QUEUE_TIMEOUT_MS;
+}
 
 /** Expired leases go back to the queue; jobs nobody takes or that keep dying fail. */
 function sweep() {
@@ -140,9 +267,9 @@ function sweep() {
     if (job.status === 'running' && job.leaseUntil && job.leaseUntil < t) {
       if (job.attempts >= MAX_ATTEMPTS) { finishJob(job, false, null, `lost ${job.attempts} workers; last was ${job.worker}`); continue; }
       job.status = 'pending'; job.worker = null; job.leaseUntil = null;
-      wake(job);
+      if (job.type === LOOKUP) wakeHost(job.payload.host); else wake(job);
     } else if (job.status === 'pending' && t - Date.parse(job.createdAt) > queueTimeout(job)) {
-      const within = job.type === FETCH ? `${Math.round(job.timeoutMs / 1000)} s` : `${Math.round(QUEUE_TIMEOUT_MS / 60000)} min`;
+      const within = job.type === FETCH || job.type === LOOKUP ? `${Math.round(queueTimeout(job) / 1000)} s` : `${Math.round(QUEUE_TIMEOUT_MS / 60000)} min`;
       finishJob(job, false, null, job.payload.worker
         ? `worker ${job.payload.worker} did not claim it within ${within}`
         : `no worker claimed it within ${within}`);
@@ -380,11 +507,13 @@ async function route(req, res) {
       if (!body.payload || typeof body.payload !== 'object') { json(res, 404, { error: 'no such job' }); return; }
       // Not create(): a waiting worker must not be handed a job this one is about to finish.
       const type = JOB_TYPES.includes(body.type) ? body.type : SCAN;
-      job = add({ ...body.payload }, type === FETCH ? FETCH_DEFAULT_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, id, type);
+      job = add({ ...body.payload }, type === FETCH ? FETCH_DEFAULT_TIMEOUT_MS : type === LOOKUP ? LOOKUP_DEFAULT_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, id, type);
       lease(job, worker);
     }
     if (job.status === 'done' || job.status === 'failed') { json(res, 409, { error: `job is already ${job.status}` }); return; }
     if (job.worker && job.worker !== worker) { json(res, 409, { error: `job is held by ${job.worker}` }); return; }
+    // A late lookup result may arrive after its lease was put back in the queue.
+    if (job.type === LOOKUP && !job.worker) job.worker = worker;
     const ok = body.ok === true;
     if (ok) w.done++; else w.failed++;
     finishJob(job, ok, body.result ?? null, str(body.error));
@@ -395,6 +524,47 @@ async function route(req, res) {
   if (method === 'GET' && p === '/api/worker/strategy') { json(res, 200, strategy()); return; }
 
   // ------------------------------------------------------------- callers
+
+  if (method === 'GET' && p === '/api/handlers') {
+    const list = [...handlers.values()].filter((h) => (!q.get('country') || h.country === q.get('country'))
+      && (!q.get('host') || h.host === q.get('host'))).map((h) => ({ ...h, health: health(h.id) }));
+    json(res, 200, { handlers: list });
+    return;
+  }
+
+  if (p === '/api/handlers/check' && method === 'GET') { json(res, 200, { run: checkRun }); return; }
+  if (p === '/api/handlers/check' && method === 'POST') {
+    const body = await readJson(req);
+    if (checkRun && !checkRun.finished) { json(res, 409, { error: 'a handler check is already running' }); return; }
+    const handler = body.handler == null ? null : handlers.get(str(body.handler));
+    if (body.handler != null && !handler) { json(res, 404, { error: 'no such handler' }); return; }
+    if (handler && !runnable(handler)) {
+      json(res, 422, { error: 'handler is not runnable', tier: handler.tier, tier4: handler.tier4, browser_steps: handler.browser_steps }); return;
+    }
+    json(res, 202, { run: startCheck(handler ? [handler] : [...handlers.values()].filter(runnable)) });
+    return;
+  }
+
+  if (method === 'POST' && p === '/api/lookup') {
+    const body = await readJson(req);
+    const handler = handlers.get(str(body.handler));
+    if (!handler) { json(res, 404, { error: 'no such handler' }); return; }
+    if (!runnable(handler)) {
+      json(res, 422, { error: 'handler is not runnable', tier: handler.tier, tier4: handler.tier4, browser_steps: handler.browser_steps }); return;
+    }
+    const keyword = str(body.keyword).trim();
+    if (!keyword || keyword.length > 200) { json(res, 422, { error: 'keyword must have 1 to 200 characters' }); return; }
+    const timeoutMs = body.timeoutMs == null ? LOOKUP_DEFAULT_TIMEOUT_MS : Number(body.timeoutMs);
+    if (!Number.isInteger(timeoutMs) || timeoutMs < LOOKUP_MIN_TIMEOUT_MS || timeoutMs > LOOKUP_MAX_TIMEOUT_MS) {
+      json(res, 400, { error: `timeoutMs is from ${LOOKUP_MIN_TIMEOUT_MS} to ${LOOKUP_MAX_TIMEOUT_MS}` }); return;
+    }
+    const job = create(lookupPayload(handler, keyword, str(body.worker).trim()), timeoutMs, LOOKUP);
+    const waitSec = Number(body.wait ?? q.get('wait') ?? NaN);
+    const waitMs = Number.isFinite(waitSec) ? waitSec * 1000 : timeoutMs + LOOKUP_LEASE_GRACE_MS;
+    const waited = await waitFor(job, Math.min(MAX_CALLER_WAIT_MS, waitMs), res);
+    if (!res.destroyed) json(res, waited.status === 'done' || waited.status === 'failed' ? 200 : 202, { job: view(waited) });
+    return;
+  }
 
   if (method === 'POST' && p === '/api/scan') {
     const body = await readJson(req);
@@ -442,7 +612,7 @@ async function route(req, res) {
     return;
   }
 
-  const jobId = /^\/api\/(?:scan|fetch|linkedin)\/([a-f0-9]{12})$/.exec(p);
+  const jobId = /^\/api\/(?:scan|fetch|linkedin|lookup)\/([a-f0-9]{12})$/.exec(p);
   if (jobId && method === 'GET') {
     const job = jobs.get(jobId[1]);
     if (!job) { json(res, 404, { error: 'no such job' }); return; }

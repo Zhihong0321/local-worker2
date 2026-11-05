@@ -1,0 +1,113 @@
+{
+  "handlers": [
+    {
+      "id": "AU-asx.com/w1",
+      "country": "AU",
+      "host": "asx.com",
+      "task": "AU-asx.com",
+      "want": "w1",
+      "question": "Offline HTTP test fixture",
+      "source_name": "Offline fixture",
+      "source_url": "https://asx.com/",
+      "tier": 4,
+      "method": "blocked",
+      "pdf": false,
+      "canary": null,
+      "file": null,
+      "tier4": {
+        "reason": "blocked",
+        "evidence": "Simulated offline fixture; not a live-site verdict."
+      },
+      "browser_steps": null,
+      "verified_at": null,
+      "version": null
+    },
+    {
+      "id": "KR-samsung.com/w1",
+      "country": "KR",
+      "host": "samsung.com",
+      "task": "KR-samsung.com",
+      "want": "w1",
+      "question": "Offline HTTP test fixture",
+      "source_name": "Offline fixture",
+      "source_url": "https://samsung.com/",
+      "tier": 3,
+      "method": "browser",
+      "pdf": false,
+      "canary": null,
+      "file": null,
+      "tier4": null,
+      "browser_steps": [
+        "Fixture only: open the public company page. Stop at any access challenge."
+      ],
+      "verified_at": null,
+      "version": null
+    },
+    {
+      "id": "MY-cims.cidb.gov.my/w1",
+      "country": "MY",
+      "host": "cims.cidb.gov.my",
+      "task": "MY-cims.cidb.gov.my",
+      "want": "w1",
+      "question": "Offline HTTP test fixture",
+      "source_name": "Offline fixture",
+      "source_url": "https://cims.cidb.gov.my/",
+      "tier": 2,
+      "method": "form_post",
+      "pdf": false,
+      "canary": {
+        "found": "Gamuda",
+        "not_found": "Microsoft"
+      },
+      "file": "MY/MY-cims.cidb.gov.my.w1.mjs",
+      "tier4": null,
+      "browser_steps": null,
+      "verified_at": null,
+      "version": "35f5ac88e597"
+    },
+    {
+      "id": "MY-cims.cidb.gov.my/w2",
+      "country": "MY",
+      "host": "cims.cidb.gov.my",
+      "task": "MY-cims.cidb.gov.my",
+      "want": "w2",
+      "question": "Offline HTTP test fixture",
+      "source_name": "Offline fixture",
+      "source_url": "https://cims.cidb.gov.my/",
+      "tier": 2,
+      "method": "form_post",
+      "pdf": false,
+      "canary": {
+        "found": "IJM",
+        "not_found": "Apple"
+      },
+      "file": "MY/MY-cims.cidb.gov.my.w2.mjs",
+      "tier4": null,
+      "browser_steps": null,
+      "verified_at": null,
+      "version": "fbdbfab29085"
+    },
+    {
+      "id": "SG-sgx.com/w1",
+      "country": "SG",
+      "host": "sgx.com",
+      "task": "SG-sgx.com",
+      "want": "w1",
+      "question": "Offline HTTP test fixture",
+      "source_name": "Offline fixture",
+      "source_url": "https://sgx.com/",
+      "tier": 1,
+      "method": "fetch",
+      "pdf": false,
+      "canary": {
+        "found": "DBS",
+        "not_found": "Microsoft"
+      },
+      "file": "SG/SG-sgx.com.w1.mjs",
+      "tier4": null,
+      "browser_steps": null,
+      "verified_at": null,
+      "version": "9a6a7993406e"
+    }
+  ]
+}
