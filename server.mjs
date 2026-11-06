@@ -18,15 +18,17 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { strategy, DEFAULT_MAX, MAX_LIMIT } from './strategy.mjs';
 import { packageZip, PACKAGE_NAME } from './package.mjs';
+import { advise, adviceConfig } from './advise.mjs';
 
 const API_KEY = process.env.API_KEY ?? '';
 const PORT = Number(process.env.PORT) || 8080;
 const KEY_LABEL = 'local-gmap-worker-v1';
 const SCAN = 'gmap.scan';
 const FETCH = 'web.fetch';
+const AUDIT = 'site.audit';
 const LINKEDIN = 'linkedin.scrape';
 const LOOKUP = 'site.lookup';
-const JOB_TYPES = [SCAN, FETCH, LINKEDIN, LOOKUP];
+const JOB_TYPES = [SCAN, FETCH, AUDIT, LINKEDIN, LOOKUP];
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 const MIN_TIMEOUT_MS = 120_000;
@@ -39,6 +41,10 @@ const FETCH_MIN_TIMEOUT_MS = 10_000;
 const FETCH_MAX_TIMEOUT_MS = 300_000;
 const FETCH_LEASE_GRACE_MS = 30_000;
 const FETCH_FORMATS = ['markdown', 'text', 'html'];
+const AUDIT_DEFAULT_TIMEOUT_MS = 180_000;
+const AUDIT_MIN_TIMEOUT_MS = 30_000;
+const AUDIT_MAX_TIMEOUT_MS = 600_000;
+const AUDIT_LEASE_GRACE_MS = 30_000;
 const LOOKUP_DEFAULT_TIMEOUT_MS = 150_000;
 const LOOKUP_MIN_TIMEOUT_MS = 10_000;
 const LOOKUP_MAX_TIMEOUT_MS = 300_000;
@@ -73,6 +79,12 @@ function same(supplied, expected) {
 }
 
 const jobs = new Map();
+/** AI advice runs for finished audits, by job id. The advice itself is kept on the job. */
+const advising = new Map();
+/** Which models give AI advice (advise.mjs); null leaves the advice route answering 503. */
+const ADVICE = adviceConfig();
+/** Longest a caller is held waiting for advice; Railway's proxy drops a request at about 5 minutes. */
+const ADVICE_MAX_WAIT_MS = 240_000;
 const workers = new Map();
 /** Workers holding a /api/jobs/next request open, oldest first. */
 const waiters = [];
@@ -218,6 +230,17 @@ function touch(name, ip) {
   return w;
 }
 
+/** Starts AI advice for a finished audit once; a failed run is started again on the next ask. */
+function startAdvice(job) {
+  if (advising.has(job.id) || job.advice?.status === 'done') return;
+  job.advice = { status: 'running', startedAt: now(), finishedAt: null, result: null, error: null };
+  const run = advise(job.result, ADVICE)
+    .then((result) => { job.advice = { ...job.advice, status: 'done', finishedAt: now(), result }; },
+      (e) => { job.advice = { ...job.advice, status: 'failed', finishedAt: now(), error: String(e?.message ?? e) }; })
+    .finally(() => advising.delete(job.id));
+  advising.set(job.id, run);
+}
+
 function view(job) {
   return { ...job, leaseUntil: job.leaseUntil ? new Date(job.leaseUntil).toISOString() : null };
 }
@@ -261,7 +284,7 @@ function lease(job, worker) {
   job.worker = worker;
   job.attempts++;
   job.startedAt = now();
-  job.leaseUntil = Date.now() + job.timeoutMs + (job.type === FETCH ? FETCH_LEASE_GRACE_MS : job.type === LOOKUP ? LOOKUP_LEASE_GRACE_MS : LEASE_GRACE_MS);
+  job.leaseUntil = Date.now() + job.timeoutMs + (job.type === FETCH ? FETCH_LEASE_GRACE_MS : job.type === AUDIT ? AUDIT_LEASE_GRACE_MS : job.type === LOOKUP ? LOOKUP_LEASE_GRACE_MS : LEASE_GRACE_MS);
   return job;
 }
 
@@ -282,10 +305,10 @@ function wakeHost(host) {
   for (const job of [...queued.filter((j) => !j.check), ...queued.filter((j) => j.check)]) wake(job);
 }
 
-/** Fetch and lookup callers usually hold the line; canaries can wait their turn. */
+/** Fetch, audit and lookup callers usually hold the line; canaries can wait their turn. */
 function queueTimeout(job) {
   if (job.type === LOOKUP) return job.check ? LOOKUP_CHECK_QUEUE_TIMEOUT_MS : job.timeoutMs;
-  return job.type === FETCH ? job.timeoutMs : QUEUE_TIMEOUT_MS;
+  return job.type === FETCH || job.type === AUDIT ? job.timeoutMs : QUEUE_TIMEOUT_MS;
 }
 
 /** Expired leases go back to the queue; jobs nobody takes or that keep dying fail. */
@@ -297,7 +320,7 @@ function sweep() {
       job.status = 'pending'; job.worker = null; job.leaseUntil = null;
       if (job.type === LOOKUP) wakeHost(job.payload.host); else wake(job);
     } else if (job.status === 'pending' && t - Date.parse(job.createdAt) > queueTimeout(job)) {
-      const within = job.type === FETCH || job.type === LOOKUP ? `${Math.round(queueTimeout(job) / 1000)} s` : `${Math.round(QUEUE_TIMEOUT_MS / 60000)} min`;
+      const within = job.type === FETCH || job.type === AUDIT || job.type === LOOKUP ? `${Math.round(queueTimeout(job) / 1000)} s` : `${Math.round(QUEUE_TIMEOUT_MS / 60000)} min`;
       finishJob(job, false, null, job.payload.worker
         ? `worker ${job.payload.worker} did not claim it within ${within}`
         : `no worker claimed it within ${within}`);
@@ -339,6 +362,26 @@ function readFetch(body) {
   }
   // The worker refuses private and local addresses itself: only it sees what the name resolves to.
   const payload = { url: url.href, format, mainContent: body.mainContent !== false };
+  if (str(body.worker).trim()) payload.worker = str(body.worker).trim();
+  return { payload, timeoutMs };
+}
+
+function readAudit(body) {
+  const raw = str(body.url).trim();
+  if (!raw) return { error: 'url is required' };
+  if (raw.length > 2048) return { error: 'url is at most 2048 characters' };
+  let url;
+  try { url = new URL(raw); } catch { return { error: 'url is not a URL' }; }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return { error: 'url must be http or https' };
+  const maxPages = body.maxPages == null ? 5 : Number(body.maxPages);
+  if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 25) return { error: 'maxPages is a whole number from 1 to 25' };
+  const botTest = body.botTest == null ? true : body.botTest;
+  if (typeof botTest !== 'boolean') return { error: 'botTest is a boolean' };
+  const timeoutMs = body.timeoutMs == null ? AUDIT_DEFAULT_TIMEOUT_MS : Number(body.timeoutMs);
+  if (!Number.isFinite(timeoutMs) || timeoutMs < AUDIT_MIN_TIMEOUT_MS || timeoutMs > AUDIT_MAX_TIMEOUT_MS) {
+    return { error: `timeoutMs is from ${AUDIT_MIN_TIMEOUT_MS} to ${AUDIT_MAX_TIMEOUT_MS}` };
+  }
+  const payload = { url: url.href, maxPages, botTest };
   if (str(body.worker).trim()) payload.worker = str(body.worker).trim();
   return { payload, timeoutMs };
 }
@@ -537,7 +580,7 @@ async function route(req, res) {
       if (!body.payload || typeof body.payload !== 'object') { json(res, 404, { error: 'no such job' }); return; }
       // Not create(): a waiting worker must not be handed a job this one is about to finish.
       const type = JOB_TYPES.includes(body.type) ? body.type : SCAN;
-      job = add({ ...body.payload }, type === FETCH ? FETCH_DEFAULT_TIMEOUT_MS : type === LOOKUP ? LOOKUP_DEFAULT_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, id, type);
+      job = add({ ...body.payload }, type === FETCH ? FETCH_DEFAULT_TIMEOUT_MS : type === AUDIT ? AUDIT_DEFAULT_TIMEOUT_MS : type === LOOKUP ? LOOKUP_DEFAULT_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, id, type);
       lease(job, worker);
     }
     if (job.status === 'done' || job.status === 'failed') { json(res, 409, { error: `job is already ${job.status}` }); return; }
@@ -622,6 +665,20 @@ async function route(req, res) {
     return;
   }
 
+  if (method === 'POST' && p === '/api/audit') {
+    const body = await readJson(req);
+    const audit = readAudit(body);
+    if (audit.error) { json(res, 400, { error: audit.error }); return; }
+    const job = create(audit.payload, audit.timeoutMs, AUDIT);
+    // Wait for the report by default; wait 0 returns the id at once.
+    const waitSec = Number(body.wait ?? q.get('wait') ?? NaN);
+    const waitMs = Number.isFinite(waitSec) ? waitSec * 1000 : audit.timeoutMs + AUDIT_LEASE_GRACE_MS;
+    const waited = await waitFor(job, Math.min(MAX_CALLER_WAIT_MS, waitMs), res);
+    if (res.destroyed) return;
+    json(res, waited.status === 'done' || waited.status === 'failed' ? 200 : 202, { job: view(waited) });
+    return;
+  }
+
   if (method === 'POST' && p === '/api/linkedin') {
     const body = await readJson(req);
     let url;
@@ -642,7 +699,32 @@ async function route(req, res) {
     return;
   }
 
-  const jobId = /^\/api\/(?:scan|fetch|linkedin|lookup)\/([a-f0-9]{12})$/.exec(p);
+  const adviceFor = /^\/api\/audit\/([a-f0-9]{12})\/advice$/.exec(p);
+  if (adviceFor && (method === 'POST' || method === 'GET')) {
+    const body = method === 'POST' ? await readJson(req) : {};
+    const job = jobs.get(adviceFor[1]);
+    if (!job || job.type !== AUDIT) { json(res, 404, { error: 'no such audit' }); return; }
+    if (method === 'POST') {
+      if (!ADVICE) { json(res, 503, { error: 'AI advice is not set up on this service: set AGY_URL and AGY_TOKEN, or ADVICE_BACKUP_URL and ADVICE_BACKUP_KEY' }); return; }
+      if (job.status !== 'done') { json(res, 409, { error: job.status === 'failed' ? 'the audit failed, so there is nothing to advise on' : 'the audit is not finished yet' }); return; }
+      startAdvice(job);
+    }
+    // POST waits 20 s by default and GET not at all; wait (seconds) changes it, up to 240.
+    const waitSec = Number(body.wait ?? q.get('wait') ?? (method === 'POST' ? 20 : 0));
+    const waitMs = Math.max(0, Math.min(ADVICE_MAX_WAIT_MS, Number.isFinite(waitSec) ? waitSec * 1000 : 0));
+    const running = advising.get(job.id);
+    if (running && waitMs > 0) {
+      let timer;
+      await Promise.race([running, new Promise((r) => { timer = setTimeout(r, waitMs); })]);
+      clearTimeout(timer);
+    }
+    if (res.destroyed) return;
+    const advice = job.advice ?? null;
+    json(res, advice?.status === 'running' ? 202 : 200, { jobId: job.id, advice });
+    return;
+  }
+
+  const jobId = /^\/api\/(?:jobs|scan|fetch|audit|linkedin|lookup)\/([a-f0-9]{12})$/.exec(p);
   if (jobId && method === 'GET') {
     const job = jobs.get(jobId[1]);
     if (!job) { json(res, 404, { error: 'no such job' }); return; }

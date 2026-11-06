@@ -34,6 +34,11 @@ caller ──POST /api/scan──▶  service (Railway)  ◀──GET /api/jobs/
    (the address baked into worker packages; default is the address you call),
    `QUEUE_TIMEOUT_MS` (fail a scan no worker took, default 30 min).
 3. Health check path: `/health`.
+4. Optional, for AI advice on audits (`advise.mjs`): `AGY_URL` and `AGY_TOKEN`
+   (the cloud agy hub, Gemini Flash; `AGY_ACCOUNTS` lists its accounts to run
+   pages in parallel), and a backup OpenAI-compatible model: `ADVICE_BACKUP_URL`,
+   `ADVICE_BACKUP_KEY`, `ADVICE_BACKUP_MODEL` (default `YL-DeepSeek-V4.1-Flash`,
+   on YuanFlow `https://yuanchengqu.com/v1`). Either one is enough.
 
 ## Set up a worker PC
 
@@ -183,6 +188,25 @@ back as markdown with tables (pymupdf4llm), about 0.4 s a page; past the
 deadline the pages read so far, `truncated: true`. Limits 30 MB, 300 pages, no
 OCR. HTTP 400+, another kind of file or a private address fails the job. No browser, so content
 only JavaScript draws is missing.
+
+**`POST /api/audit`** queues an SEO + GEO benchmark on a worker that opts into
+`site.audit`: send `{ "url": "https://example.com/" }`, optionally `maxPages`
+(1–25 besides the home page, default 5), `botTest` (boolean, default true),
+`worker`, and `timeoutMs` (30000–600000, default 180000). It waits for the report
+by default; `wait` overrides the wait in seconds and `wait: 0` returns `202`
+with the job id immediately. Poll `GET /api/jobs/:id`; a completed call returns
+`200` and the worker's result unchanged, including `scores`, `checks`, `pages`
+and `tookMs`. An unclaimed audit fails after its own timeout.
+
+**`POST /api/audit/:id/advice`** asks an AI model for page-by-page suggestions
+on a finished audit: rewrites that quote the page, questions buyers ask that
+the page does not answer, and the top 5 actions for the site. The cloud agy hub
+answers first (sandboxed, since page text is untrusted); the backup model
+answers when agy fails or does not return the JSON asked for. A suggestion that
+quotes text the page does not have is dropped. It runs once per audit and takes
+a minute or two: the call waits 20 s by default (`wait`, up to 240), answers `202`
+while running, and `GET /api/audit/:id/advice?wait=60` picks it up. `503` when no
+model is set up, `409` before the audit is done. The scores never come from the AI.
 
 **`GET /api/scan/:id?wait=60`** — the job; `wait` holds until it finishes
 (`/api/fetch/:id` is the same route).

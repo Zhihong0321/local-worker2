@@ -21,6 +21,8 @@
 # markdown, text or html, in place of Jina Reader or Tavily extract. fetch.py
 # does that with Scrapling's parts (no browser) in a Python of its own, which
 # this sets up under %LOCALAPPDATA% on first start. Scans work without it.
+# The same Python runs site.audit jobs (audit.py): an SEO and GEO benchmark of
+# one website, a few dozen polite requests to that site.
 #
 # Windows PowerShell 5.1, ASCII only (5.1 reads a BOM-less script as ANSI).
 param([ValidateSet('on', 'off', '')][string]$Autostart = '')
@@ -592,6 +594,37 @@ function Invoke-Fetch($Job) {
   } finally { Remove-Item $file -Force -ErrorAction SilentlyContinue }
 }
 
+# One site.audit job, by audit.py (with fetch.py's reader) in its own process.
+function Invoke-Audit($Job) {
+  $p = $Job.payload
+  $file = Join-Path $Data "audit-$($Job.id).json"
+  $spec = @{ url = $p.url; maxPages = $p.maxPages; botTest = ($p.botTest -ne $false); timeoutMs = [int]$Job.timeoutMs }
+  [IO.File]::WriteAllText($file, ($spec | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
+  try {
+    $psi = New-Object Diagnostics.ProcessStartInfo $PyExe
+    $psi.Arguments = '-I "' + (Join-Path $PSScriptRoot 'audit.py') + '" "' + $file + '"'
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $proc = [Diagnostics.Process]::Start($psi)
+    $out = $proc.StandardOutput.ReadToEndAsync()
+    $err = $proc.StandardError.ReadToEndAsync()
+    if (-not $proc.WaitForExit([int]$Job.timeoutMs + 10000)) {
+      try { $proc.Kill() } catch { }
+      throw "the audit took longer than $([int]($Job.timeoutMs / 1000)) s"
+    }
+    $proc.WaitForExit()
+    $line = @($out.Result.Trim() -split "`r?`n")[-1]
+    if (-not $line) { throw "audit.py answered nothing: $($err.Result.Trim())" }
+    $r = $line | ConvertFrom-Json
+    if (-not $r.ok) { throw [string]$r.error }
+    $r.result | Add-Member worker $Name
+    return $r.result
+  } finally { Remove-Item $file -Force -ErrorAction SilentlyContinue }
+}
+
 # -------------------------------------------------------------- site lookup
 
 # Pinned from nodejs.org/dist/index.json and this release's SHASUMS256.txt.
@@ -808,6 +841,7 @@ while ($true) {
     $script:Types = (@(
       if (-not $resting) { 'gmap.scan' }
       if ($script:FetchReady) { 'web.fetch' }
+      if ($script:FetchReady) { 'site.audit' }
       if ($script:LinkedInReady -and (Test-Path -LiteralPath $LinkedInSession) -and $LinkedInState.state -eq 'ready') { 'linkedin.scrape' }
       if ($script:NodeReady) { 'site.lookup' }
     )) -join ','
@@ -890,6 +924,18 @@ while ($true) {
         if ($LinkedInState.state -ne 'ready') { [IO.File]::WriteAllText($LinkedInStateFile, ($LinkedInState | ConvertTo-Json -Compress)) }
         Send-Result $job.id $job.payload $false $null ($message + " (waitedMs=$waitedMs)") $retry 'linkedin.scrape'
       } finally { Remove-Item $file -Force -ErrorAction SilentlyContinue; $script:JobId = $null }
+      continue
+    }
+    if ($job.type -eq 'site.audit') {
+      Log "job $($job.id): audit $($job.payload.url)"
+      try {
+        $result = Invoke-Audit $job
+        Log "job $($job.id): SEO $($result.scores.seo), GEO $($result.scores.geo), $(@($result.pages).Count) pages in $($result.tookMs) ms"
+        Send-Result $job.id $job.payload $true $result '' 0 'site.audit'
+      } catch {
+        Log "job $($job.id) failed: $($_.Exception.Message)"
+        Send-Result $job.id $job.payload $false $null ([string]$_.Exception.Message) 0 'site.audit'
+      } finally { $script:JobId = $null }
       continue
     }
     if ($job.type -eq 'web.fetch') {

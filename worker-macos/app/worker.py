@@ -22,8 +22,8 @@
 # the keyword's family, then for a Business scan "shop/company in <street>" for
 # the streets the first pass found. The words come from the service on every job.
 #
-# It also takes web.fetch jobs (fetch.py) and linkedin.scrape jobs
-# (linkedin_job.py), each in a process of its own, with packages this installs
+# It also takes web.fetch jobs (fetch.py), site.audit jobs (audit.py) and
+# linkedin.scrape jobs (linkedin_job.py), each in a process of its own, with packages this installs
 # into its own Python on first start. Scans work without them. Those scripts
 # are the Windows worker's own, run from ../../worker, so a git pull brings
 # their fixes to both. test/macos-parity.test.mjs fails when worker.ps1's
@@ -703,6 +703,27 @@ def invoke_fetch(job):
         file.unlink(missing_ok=True)
 
 
+# One site.audit job, by audit.py (with fetch.py's reader) in its own process.
+def invoke_audit(job):
+    p = job.get('payload') or {}
+    file = DATA / f"audit-{job['id']}.json"
+    spec = {'url': p.get('url'), 'maxPages': p.get('maxPages'), 'botTest': p.get('botTest') is not False, 'timeoutMs': to_int(job.get('timeoutMs'))}
+    write_text(file, json.dumps(spec, separators=(',', ':')))
+    try:
+        timeout_ms = to_int(job.get('timeoutMs'))
+        line, err = run_job_script([PyExe, '-I', str(SHARED / 'audit.py'), str(file)], timeout_ms + 10000,
+                                   timeout_message=f'the audit took longer than {timeout_ms // 1000} s')
+        if not line:
+            raise RuntimeError(f'audit.py answered nothing: {err}')
+        r = json.loads(line)
+        if not r.get('ok'):
+            raise RuntimeError(str(r.get('error')))
+        r['result']['worker'] = Name
+        return r['result']
+    finally:
+        file.unlink(missing_ok=True)
+
+
 # -------------------------------------------------------------- site lookup
 
 # Pinned from nodejs.org/dist/index.json and this release's SHASUMS256.txt.
@@ -977,6 +998,7 @@ def main():
             Types = ','.join(t for t in (
                 'gmap.scan' if not resting else None,
                 'web.fetch' if FetchReady else None,
+                'site.audit' if FetchReady else None,
                 'linkedin.scrape' if LinkedInReady and os.path.exists(LinkedInSession) and LinkedInState['state'] == 'ready' else None,
                 'site.lookup' if NodeReady else None,
             ) if t)
@@ -1014,6 +1036,18 @@ def main():
                 continue
             if job.get('type') == 'linkedin.scrape':
                 run_linkedin_job(job)
+                continue
+            if job.get('type') == 'site.audit':
+                log(f"job {job['id']}: audit {payload.get('url')}")
+                try:
+                    result = invoke_audit(job)
+                    log(f"job {job['id']}: SEO {result['scores'].get('seo')}, GEO {result['scores'].get('geo')}, {len(result.get('pages') or [])} pages in {result.get('tookMs')} ms")
+                    send_result(job['id'], job.get('payload'), True, result, '', 0, 'site.audit')
+                except Exception as e:
+                    log(f"job {job['id']} failed: {e}")
+                    send_result(job['id'], job.get('payload'), False, None, str(e), 0, 'site.audit')
+                finally:
+                    JobId = None
                 continue
             if job.get('type') == 'web.fetch':
                 log(f"job {job['id']}: fetch {payload.get('url')}")

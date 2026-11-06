@@ -50,7 +50,7 @@
 <h1>Local Gmap Worker API</h1>
 <p class="lead">Google Maps business scans, web page reads, and LinkedIn profile and company scraping as an API. Jobs run on Windows worker PCs and are posted back here.</p>
 <nav>
-  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#linkedin">LinkedIn</a><a href="#fetch">Fetch a page</a><a href="#lookup">Site lookup</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
+  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#linkedin">LinkedIn</a><a href="#fetch">Fetch a page</a><a href="#audit">Site audit</a><a href="#lookup">Site lookup</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
 </nav>
 
 <h2 id="base">Base URL</h2>
@@ -141,6 +141,60 @@ curl -X DELETE -H "Authorization: Bearer $API_KEY" "https://YOUR-SERVICE/api/lin
 <p><strong>PDFs</strong> come back as markdown, tables as markdown tables (<code>format: "text"</code> gives plain text). A PDF reads at about 0.4 s a page: past the fetch's deadline it returns the pages it has with <code>truncated: true</code>, so send a larger <code>timeoutMs</code> for very long ones. Limits: 30 MB and 300 pages. Scanned PDFs without a text layer come back nearly empty.</p>
 <p>A site answering HTTP 400 or above, another kind of file (image, Word) or a refused address fails the job with an <code>error</code>. Plain text and JSON come back as they are. Pages are read without a browser, so content drawn only by JavaScript is not there.</p>
 
+<h2 id="audit">Audit a website</h2>
+<p><span class="ep">POST</span><span class="path">/api/audit</span></p>
+<p>Queue a <code>site.audit</code> job for an SEO and GEO (generative AI optimization) benchmark report. The worker reads the site on its own internet connection and builds the report; the service stores and returns that result unchanged. Use the caller API key.</p>
+<pre><code>curl -X POST https://YOUR-SERVICE/api/audit \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/","maxPages":5,"botTest":true}'</code></pre>
+<table>
+  <tr><th>Field</th><th>Meaning</th></tr>
+  <tr><td><code>url</code></td><td>Required http or https URL, at most 2048 characters. Normalized before queuing.</td></tr>
+  <tr><td><code>maxPages</code></td><td>Whole number from 1 to 25, default 5. Pages to crawl besides the home page.</td></tr>
+  <tr><td><code>botTest</code></td><td>Boolean, default <code>true</code>. The worker refetches the page using AI-bot User-Agents.</td></tr>
+  <tr><td><code>worker</code></td><td>Optional worker name to pin the audit to one worker.</td></tr>
+  <tr><td><code>timeoutMs</code></td><td>30000 to 600000 milliseconds, default 180000. A pending audit also fails if nobody claims it within this time. The running lease includes 30 seconds of grace.</td></tr>
+  <tr><td><code>wait</code></td><td>Seconds to hold the request, up to 900, in the body or query. Default: the timeout plus 30 seconds. <code>0</code> returns the job id at once.</td></tr>
+</table>
+<p>Returns <code>{ "job": ... }</code>: HTTP <code>200</code> if the audit finishes during the wait, otherwise <code>202</code> while pending or running. Invalid input returns <code>400</code>. A finished job may have <code>status: "failed"</code>; check <code>job.error</code>. Poll with <code>GET /api/jobs/{id}?wait=60</code>.</p>
+<p>The worker's report is held in <code>job.result</code>, including <code>scores</code> with <code>seo</code>, <code>geo</code> and <code>groups</code>, a <code>checks</code> array, <code>pages</code> and <code>tookMs</code>. Illustrative result:</p>
+<pre><code>{
+  "url": "https://example.com/", "finalUrl": "https://example.com/", "status": 200,
+  "scores": { "seo": 89, "geo": 49,
+    "groups": { "crawl": { "score": 100, "area": "seo", "checks": 13 }, "trust": { "score": 6, "area": "geo", "checks": 4 } } },
+  "checks": [
+    { "id": "trust.dates", "group": "trust", "title": "Publication and Modification Dates",
+      "status": "fail", "score": 0, "weight": 2, "pages": 3, "worstUrl": "https://example.com/",
+      "detail": "0 of 3 pages pass. Weakest: https://example.com/: No publication or modification dates found.",
+      "data": {} }
+  ],
+  "pages": [{ "url": "https://example.com/", "depth": 0, "title": "Example", "words": 1234,
+              "description": "...", "headings": ["h1 ..."], "content": "markdown of the main text",
+              "issues": [{ "id": "trust.dates", "status": "fail", "detail": "..." }],
+              "scores": { "seo": 90, "geo": 56, "groups": {} } }],
+  "facts": { "robotsTxt": 200, "llmsTxt": 200, "certDaysLeft": 62, "bots": [] },
+  "notChecked": ["Backlinks and domain authority: needs a paid web-wide link index.", "..."],
+  "errors": [], "provider": "local-audit", "tookMs": 45641, "worker": "pc-..."
+}</code></pre>
+<p>Each check has <code>id</code>, <code>group</code>, <code>title</code>, <code>status</code> (<code>pass</code>, <code>warn</code>, <code>fail</code> or <code>na</code>), <code>score</code>, <code>weight</code>, <code>detail</code> and <code>data</code>.</p>
+<p class="note">Workers only receive audits when they explicitly include <code>site.audit</code> in their <code>types</code> poll parameter. The default remains <code>gmap.scan,web.fetch</code>.</p>
+
+<h3 id="advice">AI advice on an audit</h3>
+<p><span class="ep">POST</span><span class="path">/api/audit/{id}/advice</span></p>
+<p>Asks an AI model to read the audited pages and suggest concrete fixes: rewrites that quote the page, questions buyers ask that the page does not answer, and the five actions that matter most for the site. The cloud agy hub (Gemini Flash, sandboxed) answers first; a backup OpenAI-compatible model (DeepSeek by default) answers when agy fails. A suggestion whose quote is not on the page is dropped. Scores never come from the AI.</p>
+<pre><code>curl -X POST https://YOUR-SERVICE/api/audit/JOB_ID/advice   -H "Authorization: Bearer $API_KEY" -d '{"wait":60}'</code></pre>
+<p>Runs once per audit and takes a minute or two. The call waits 20 seconds by default (<code>wait</code>, up to 240) and answers <code>202</code> while it runs; <code>GET /api/audit/{id}/advice?wait=60</code> picks it up, and the job itself carries it as <code>job.advice</code>. <code>404</code> for an unknown audit, <code>409</code> before the audit is done, <code>503</code> when the service has no model set up (<code>AGY_URL</code>/<code>AGY_TOKEN</code> or <code>ADVICE_BACKUP_URL</code>/<code>ADVICE_BACKUP_KEY</code>). A failed run is started again on the next POST.</p>
+<pre><code>{ "jobId": "...", "advice": { "status": "done", "startedAt": "...", "finishedAt": "...", "error": null,
+  "result": {
+    "site": { "summary": "...", "top_actions": [{ "priority": 1, "action": "...", "why": "...", "pages": ["..."], "effort": "low" }],
+              "provider": "agy", "model": "gemini-3.8-flash-high" },
+    "pages": [{ "url": "...", "page_summary": "...", "answers_buyer_questions": [], "missing_buyer_questions": [],
+                "suggestions": [{ "priority": 1, "area": "answer", "problem": "...", "current_text": "exact quote, or missing",
+                                  "suggested_text": "...", "why": "...", "needs_owner_input": false }],
+                "dropped": [], "provider": "backup", "model": "YL-DeepSeek-V4.1-Flash", "fellBack": ["agy: ..."] }],
+    "note": "...", "tookMs": 95000 } } }</code></pre>
+
 <h2 id="lookup">Site lookup</h2>
 <p><span class="ep">POST</span><span class="path">/api/lookup</span></p>
 <p>Run a library handler for a company name on a worker PC's internet connection. The handler's return value is preserved under <code>job.result.result</code>. The call waits for the answer by default.</p>
@@ -214,12 +268,12 @@ curl -X DELETE -H "Authorization: Bearer $API_KEY" "https://YOUR-SERVICE/api/lin
 
 <h2 id="get">Get, cancel and list jobs</h2>
 <h3><span class="ep">GET</span><span class="path">/api/scan/{id}?wait=60</span></h3>
-<p><code>/api/fetch/{id}</code>, <code>/api/linkedin/{id}</code> and <code>/api/lookup/{id}</code> also retrieve jobs.</p>
+<p><code>/api/jobs/{id}</code>, <code>/api/fetch/{id}</code>, <code>/api/audit/{id}</code>, <code>/api/linkedin/{id}</code> and <code>/api/lookup/{id}</code> also retrieve jobs.</p>
 <p>Returns the job. <code>wait</code> holds the request until it finishes, up to 900 seconds. <code>404</code> for an unknown id.</p>
 <h3><span class="ep">DELETE</span><span class="path">/api/scan/{id}</span></h3>
-<p>Cancels the job. <code>/api/fetch/{id}</code>, <code>/api/linkedin/{id}</code> and <code>/api/lookup/{id}</code> also accept DELETE. <code>409</code> if it has already finished.</p>
+<p>Cancels the job. <code>/api/jobs/{id}</code>, <code>/api/fetch/{id}</code>, <code>/api/audit/{id}</code>, <code>/api/linkedin/{id}</code> and <code>/api/lookup/{id}</code> also accept DELETE. <code>409</code> if it has already finished.</p>
 <h3><span class="ep">GET</span><span class="path">/api/scans?status=running</span></h3>
-<p>Recent jobs, up to 200, without results. <code>status</code> is optional: <code>pending</code>, <code>running</code>, <code>done</code> or <code>failed</code>. <code>type</code> is optional: <code>gmap.scan</code>, <code>web.fetch</code>, <code>linkedin.scrape</code> or <code>site.lookup</code>.</p>
+<p>Recent jobs, up to 200, without results. <code>status</code> is optional: <code>pending</code>, <code>running</code>, <code>done</code> or <code>failed</code>. <code>type</code> is optional: <code>gmap.scan</code>, <code>web.fetch</code>, <code>site.audit</code>, <code>linkedin.scrape</code> or <code>site.lookup</code>.</p>
 
 <h2 id="other">Other routes</h2>
 <table>
@@ -233,7 +287,7 @@ curl -X DELETE -H "Authorization: Bearer $API_KEY" "https://YOUR-SERVICE/api/lin
 <h2 id="job">Job object</h2>
 <pre><code>{
   "id": "857ccca76cfe",
-  "type": "gmap.scan",       // gmap.scan | web.fetch | linkedin.scrape | site.lookup
+  "type": "gmap.scan",       // gmap.scan | web.fetch | site.audit | linkedin.scrape | site.lookup
   "status": "done",          // pending | running | done | failed
   "worker": "pc-desktop-camhl16",
   "attempts": 1,
@@ -259,7 +313,7 @@ curl -X DELETE -H "Authorization: Bearer $API_KEY" "https://YOUR-SERVICE/api/lin
 
 <h2 id="behaviour">Behaviour</h2>
 <ul>
-  <li><strong>No worker free.</strong> A job waits in the queue. A scan fails after 30 minutes with no worker, a fetch after its <code>timeoutMs</code>.</li>
+  <li><strong>No worker free.</strong> A job waits in the queue. A scan fails after 30 minutes with no worker, a fetch or audit after its <code>timeoutMs</code>.</li>
   <li><strong>Lost worker.</strong> A job whose worker stops responding goes back to the queue. After 3 lost workers it fails.</li>
   <li><strong>Google refusal.</strong> The worker posts what it has and rests for 30 minutes. The service sends it no scans meanwhile; it still takes fetches.</li>
   <li><strong>Restart.</strong> The queue is held in memory. A redeploy drops pending jobs. A job already running is re-filed when its worker posts the result.</li>

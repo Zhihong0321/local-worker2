@@ -172,6 +172,136 @@ test('a fetch result lost to a restart is filed again as a fetch', async () => {
   assert.equal(job.status, 'done');
 });
 
+test('audit round trip waits by default and preserves the report unchanged', async () => {
+  const posted = call('/api/audit', api, { method: 'POST', body: JSON.stringify({ url: ' HTTPS://EXAMPLE.COM:443 ', worker: 'pc-audit' }) });
+  const next = await call('/api/jobs/next?worker=pc-audit&types=site.audit&wait=5', wk);
+  assert.equal(next.status, 200);
+  const { job } = await next.json();
+  assert.equal(job.type, 'site.audit');
+  assert.deepEqual(job.payload, { url: 'https://example.com/', maxPages: 5, botTest: true, worker: 'pc-audit' });
+  assert.equal(job.timeoutMs, 180_000);
+  assert.equal(Date.parse(job.leaseUntil) - Date.parse(job.startedAt), 210_000);
+  const result = {
+    scores: { seo: 82, geo: 73, groups: { metadata: 90 } },
+    checks: [{ id: 'title', group: 'metadata', title: 'Page title', status: 'pass', score: 100, weight: 2, detail: 'Present', data: { title: 'Example', extra: [null, false] } }],
+    pages: [{ url: job.payload.url, status: 200 }], tookMs: 1234, extra: { preserve: true },
+  };
+  assert.equal((await call(`/api/jobs/${job.id}/result`, wk, { method: 'POST', body: JSON.stringify({ worker: 'pc-audit', type: 'site.audit', ok: true, result }) })).status, 200);
+  const response = await posted;
+  assert.equal(response.status, 200);
+  const { job: done } = await response.json();
+  assert.equal(done.status, 'done');
+  assert.deepEqual(done.result, result);
+  assert.deepEqual((await (await call(`/api/jobs/${job.id}`, api)).json()).job.result, result);
+  assert.deepEqual((await (await call(`/api/audit/${job.id}`, api)).json()).job.result, result);
+});
+
+test('audit checks its input and requires a caller key', async () => {
+  assert.equal((await call('/api/audit', {}, { method: 'POST', body: '{}' })).status, 401);
+  assert.equal((await call('/api/audit', wk, { method: 'POST', body: '{}' })).status, 403);
+  const invalid = [
+    {}, { url: '   ' }, { url: 'ftp://example.com/' }, { url: 'nope' }, { url: 'https://example.com/' + 'x'.repeat(2048) },
+    ...[0, 26, 1.5, 'invalid'].map((maxPages) => ({ url: 'https://example.com/', maxPages })),
+    ...['false', 0, {}, []].map((botTest) => ({ url: 'https://example.com/', botTest })),
+    ...[29999, 600001, 'invalid'].map((timeoutMs) => ({ url: 'https://example.com/', timeoutMs })),
+  ];
+  for (const body of invalid) {
+    const response = await call('/api/audit', api, { method: 'POST', body: JSON.stringify(body) });
+    assert.equal(response.status, 400, JSON.stringify(body));
+    assert.equal(typeof (await response.json()).error, 'string');
+  }
+});
+
+test('audit requires explicit opt-in and respects worker pinning', async () => {
+  const response = await call('/api/audit', api, { method: 'POST', body: JSON.stringify({ url: 'https://example.com/', worker: 'pc-audit-opt', wait: 0 }) });
+  assert.equal(response.status, 202);
+  const { job: queued } = await response.json();
+  assert.equal(queued.status, 'pending');
+  // Earlier tests can leave scans queued; default polls may take those, never an audit.
+  for (const types of ['', '&types=gmap.scan,web.fetch']) {
+    const other = await call(`/api/jobs/next?worker=pc-audit-opt&wait=0${types}`, wk);
+    if (other.status === 200) assert.notEqual((await other.json()).job.type, 'site.audit');
+    else assert.equal(other.status, 204);
+  }
+  assert.equal((await call('/api/jobs/next?worker=pc-audit-other&types=site.audit&wait=0', wk)).status, 204);
+  const { job } = await (await call('/api/jobs/next?worker=pc-audit-opt&types=web.fetch,site.audit&wait=0', wk)).json();
+  assert.equal(job.id, queued.id);
+  await call(`/api/jobs/${job.id}/result`, wk, { method: 'POST', body: JSON.stringify({ worker: 'pc-audit-opt', ok: true, result: {} }) });
+});
+
+test('audit accepts boundary options and wait 0 in the query or body', async () => {
+  for (const [maxPages, timeoutMs, query] of [[1, 30000, '?wait=0'], [25, 600000, '']]) {
+    const body = { url: 'http://example.com', maxPages, timeoutMs, botTest: false, worker: ' pc-audit-options ', ...(query ? {} : { wait: 0 }) };
+    const response = await call('/api/audit' + query, api, { method: 'POST', body: JSON.stringify(body) });
+    assert.equal(response.status, 202);
+    const { job } = await response.json();
+    assert.equal(job.timeoutMs, timeoutMs);
+    assert.deepEqual(job.payload, { url: 'http://example.com/', maxPages, botTest: false, worker: 'pc-audit-options' });
+    assert.equal((await call(`/api/jobs/${job.id}`, api, { method: 'DELETE' })).status, 200);
+  }
+});
+
+test('audit wait seconds returns a pending job that can be polled through completion', async () => {
+  const response = await call('/api/audit', api, { method: 'POST', body: JSON.stringify({ url: 'https://example.com/', worker: 'pc-audit-wait', wait: 0.01 }) });
+  assert.equal(response.status, 202);
+  const { job } = await response.json();
+  const polling = call(`/api/jobs/${job.id}?wait=5`, api);
+  const claimed = (await (await call('/api/jobs/next?worker=pc-audit-wait&types=site.audit&wait=0', wk)).json()).job;
+  assert.equal(claimed.id, job.id);
+  await call(`/api/jobs/${job.id}/result`, wk, { method: 'POST', body: JSON.stringify({ worker: 'pc-audit-wait', ok: false, error: 'audit failed' }) });
+  const done = (await (await polling).json()).job;
+  assert.equal(done.status, 'failed');
+  assert.equal(done.error, 'audit failed');
+});
+
+test('an audit result lost to a restart is filed again without waking an idle worker', async () => {
+  const waiting = call('/api/jobs/next?worker=pc-audit-idle&types=site.audit&wait=1', wk);
+  await new Promise((r) => setTimeout(r, 100));
+  const id = 'a0d170123456';
+  const body = { worker: 'pc-audit-restart', type: 'site.audit', ok: true, payload: { url: 'https://example.com/', maxPages: 3, botTest: false }, result: { scores: { seo: 80, geo: 70, groups: {} }, checks: [], pages: [], tookMs: 42 } };
+  assert.equal((await call(`/api/jobs/${id}/result`, wk, { method: 'POST', body: JSON.stringify(body) })).status, 200);
+  assert.equal((await waiting).status, 204);
+  const { job } = await (await call(`/api/jobs/${id}`, api)).json();
+  assert.equal(job.type, 'site.audit');
+  assert.equal(job.status, 'done');
+  assert.equal(job.timeoutMs, 180000);
+  assert.equal(job.attempts, 1);
+  assert.equal(job.worker, body.worker);
+  assert.deepEqual(job.payload, body.payload);
+  assert.deepEqual(job.result, body.result);
+});
+
+test('audit queue deadlines and lease grace use its own timeout', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: Date.now() });
+  const isolated = await import('../server.mjs?audit-clock');
+  const service = await isolated.start(0);
+  t.after(() => service.close());
+  const request = (route, headers = api, body) => fetch(`http://localhost:${service.address().port}${route}`, {
+    headers, ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}),
+  });
+  const queued = (await (await request('/api/audit', api, { url: 'https://example.com/', timeoutMs: 30000, wait: 0 })).json()).job;
+  const pinned = (await (await request('/api/audit', api, { url: 'https://example.com/', timeoutMs: 60000, worker: 'missing-audit', wait: 0 })).json()).job;
+  for (let i = 0; i < 7; i++) t.mock.timers.tick(5000);
+  const failed = (await (await request(`/api/jobs/${queued.id}`)).json()).job;
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.error, 'no worker claimed it within 30 s');
+  assert.equal((await (await request(`/api/jobs/${pinned.id}`)).json()).job.status, 'pending');
+  for (let i = 0; i < 6; i++) t.mock.timers.tick(5000);
+  assert.equal((await (await request(`/api/jobs/${pinned.id}`)).json()).job.error, 'worker missing-audit did not claim it within 60 s');
+  const active = (await (await request('/api/audit', api, { url: 'https://example.com/', timeoutMs: 30000, worker: 'audit-lease', wait: 0 })).json()).job;
+  const leased = (await (await request('/api/jobs/next?worker=audit-lease&types=site.audit&wait=0', wk)).json()).job;
+  assert.equal(leased.id, active.id);
+  assert.equal(Date.parse(leased.leaseUntil) - Date.parse(leased.startedAt), 60000);
+  for (let i = 0; i < 12; i++) t.mock.timers.tick(5000);
+  assert.equal((await (await request(`/api/jobs/${active.id}`)).json()).job.status, 'running');
+  t.mock.timers.tick(5000);
+  assert.equal((await (await request(`/api/jobs/${active.id}`)).json()).job.status, 'pending');
+  const reclaimed = (await (await request('/api/jobs/next?worker=audit-lease&types=site.audit&wait=0', wk)).json()).job;
+  assert.equal(reclaimed.id, active.id);
+  assert.equal(reclaimed.attempts, 2);
+  await request(`/api/jobs/${active.id}/result`, wk, { worker: 'audit-lease', ok: true, result: {} });
+});
+
 test('package zip carries the worker key', async () => {
   const r = await call('/api/worker/package', api);
   assert.equal(r.status, 200);
@@ -467,4 +597,11 @@ test('a started hub runs the handler check once soon after start, without waitin
   assert.equal(before, null);
   assert.ok(after?.id, 'no check run 600 ms after start');
   assert.equal(after.handlers.length, 3);
+});
+
+test('AI advice answers 503 when no model is set up on the service', async () => {
+  const job = (await (await call('/api/audit', api, { method: 'POST', body: JSON.stringify({ url: 'https://example.com/', worker: 'pc-no-advice', wait: 0 }) })).json()).job;
+  const r = await call(`/api/audit/${job.id}/advice`, api, { method: 'POST' });
+  assert.equal(r.status, 503);
+  assert.match((await r.json()).error, /AGY_URL/);
 });
