@@ -50,7 +50,7 @@
 <h1>Local Gmap Worker API</h1>
 <p class="lead">Google Maps business scans, web page reads, and LinkedIn profile and company scraping as an API. Jobs run on Windows worker PCs and are posted back here.</p>
 <nav>
-  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#linkedin">LinkedIn</a><a href="#fetch">Fetch a page</a><a href="#audit">Site audit</a><a href="#lookup">Site lookup</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
+  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#linkedin">LinkedIn</a><a href="#fetch">Fetch a page</a><a href="#audit">Site audit</a><a href="#measures">What it measures</a><a href="#advice">AI advice</a><a href="#lookup">Site lookup</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
 </nav>
 
 <h2 id="base">Base URL</h2>
@@ -179,6 +179,41 @@ curl -X DELETE -H "Authorization: Bearer $API_KEY" "https://YOUR-SERVICE/api/lin
 }</code></pre>
 <p>Each check has <code>id</code>, <code>group</code>, <code>title</code>, <code>status</code> (<code>pass</code>, <code>warn</code>, <code>fail</code> or <code>na</code>), <code>score</code>, <code>weight</code>, <code>detail</code> and <code>data</code>.</p>
 <p class="note">Workers only receive audits when they explicitly include <code>site.audit</code> in their <code>types</code> poll parameter. The default remains <code>gmap.scan,web.fetch</code>.</p>
+
+<h3 id="measures">What the audit measures</h3>
+<p>Two scores from 0 to 100, like PageSpeed. <strong>SEO</strong> is how well Google can crawl, read and trust the site. <strong>GEO</strong> (generative engine optimization) is how well AI answer engines such as ChatGPT, Claude, Perplexity, Gemini and Google AI Overviews can reach the site, understand it and quote it.</p>
+
+<p><strong>What the worker reads.</strong> The page you send and up to <code>maxPages</code> more pages on the same site (links from that page first, then the sitemap). It also reads <code>robots.txt</code>, <code>/llms.txt</code>, the sitemap (the first child of a sitemap index), a made-up URL to test the 404 page, the <code>http://</code> and <code>www</code> versions of the address, and the TLS certificate. It sends a HEAD request to up to 25 internal links it did not open, and to up to 8 scripts for their size. With <code>botTest</code> it reads the page again as GPTBot, OAI-SearchBot, ChatGPT-User, ClaudeBot, Claude-User, PerplexityBot and CCBot. Last, it looks the site up in Wikidata and the Common Crawl index. That is a few dozen requests, a quarter of a second apart, on the worker's own connection. Pages are read without a browser, the way most AI crawlers read them.</p>
+
+<p><strong>How a score is built.</strong> Each check gives a score from 0 to 1 (<code>pass</code> is 1, <code>fail</code> is 0, <code>warn</code> is in between) and has a weight from 1 to 3. <code>na</code> checks, which could not be measured, are left out. A group's score is the weighted mean of its checks, times 100. The SEO and GEO scores are the weighted mean of their groups, using the shares below; a group with no measured checks is left out and the other shares are scaled up. Page checks run on every page read and are averaged, so their detail says, for example, "2 of 3 pages pass" and names the weakest page. Site checks run once.</p>
+
+<table>
+  <tr><th>SEO group</th><th>Share</th><th>Checks</th><th>How sure</th></tr>
+  <tr><td><code>crawl</code><br>Crawl and indexing</td><td>30%</td><td>Home page answers 200 and is indexable; <code>robots.txt</code> is there and lets Googlebot in; sitemap listed in <code>robots.txt</code>, readable, with URLs; broken internal links; a made-up URL answers 404 (no soft 404); <code>http://</code> redirects to <code>https://</code>; redirect hops; <code>www</code> and bare host end up on the same address; unique titles and descriptions across pages; pages not set to <code>noindex</code>.</td><td>Exact</td></tr>
+  <tr><td><code>onpage</code><br>On-page</td><td>30%</td><td>Title of 15 to 65 characters; meta description of 50 to 160; exactly one H1; alt text on images; at least 300 words; <code>lang</code> set; Open Graph and Twitter cards; mobile viewport; canonical tag pointing at the page itself; clean URL (short, lowercase, no underscores, few parameters).</td><td>Exact</td></tr>
+  <tr><td><code>speed</code><br>Speed</td><td>15%</td><td>Time to first byte (800 ms or less); HTML size (500 KB or less); compression (br, gzip, zstd); a <code>Cache-Control</code> header; HTTP/2 or HTTP/3.</td><td>Exact, but measured from the worker's own connection, on the HTML only. Not Lighthouse and not Core Web Vitals.</td></tr>
+  <tr><td><code>schema</code><br>Structured data</td><td>15%</td><td>JSON-LD or microdata present; required properties for each known type (Organization, LocalBusiness, Article, Product, FAQPage, BreadcrumbList, Event, Recipe, JobPosting and more); recommended properties; an Organization with name, URL and logo; breadcrumbs on inner pages.</td><td>Exact, against our copy of Google's rules. Not Google's own Rich Results Test.</td></tr>
+  <tr><td><code>security</code><br>Security</td><td>10%</td><td>HTTPS; HSTS of 180 days or more; security headers (CSP, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy); no <code>http://</code> images on an HTTPS page; certificate valid for 30 days or more.</td><td>Exact</td></tr>
+</table>
+
+<table>
+  <tr><th>GEO group</th><th>Share</th><th>Checks</th><th>How sure</th></tr>
+  <tr><td><code>ai_access</code><br>AI crawler access</td><td>30%</td><td><code>robots.txt</code> lets AI search and answer bots in (OAI-SearchBot, ChatGPT-User, Claude-SearchBot, Claude-User, PerplexityBot, Perplexity-User, Googlebot, Bingbot, DuckAssistBot, MistralAI-User); AI training bots (GPTBot, ClaudeBot, Google-Extended, CCBot and others), which can only warn, since blocking them is a fair choice; no <code>User-agent: *</code> block on the whole site; no <code>noai</code>, <code>noindex</code> or <code>nosnippet</code>; the firewall gives AI bots the same page as a browser; <code>/llms.txt</code> present and in the llmstxt.org format; the text is in the HTML without JavaScript; text is not buried in markup.</td><td>Exact, except two. The firewall test sends each bot's name from the worker's address, while real bots are recognised by their own addresses, so treat it as a hint. The JavaScript test judges from the HTML only.</td></tr>
+  <tr><td><code>answer</code><br>Answer-ready</td><td>25%</td><td>Headings phrased as questions; a direct answer of 15 to 80 words at the start of each section; sections of 40 to 350 words that stand on their own; lists or tables; an FAQ; a short summary before the first H2; one H1 and no skipped heading levels; short paragraphs.</td><td>Rules of thumb, tuned for English</td></tr>
+  <tr><td><code>trust</code><br>Trust (E-E-A-T)</td><td>20%</td><td>An author named on articles; published or updated dates; the newest date under a year old; links to About, Contact and Privacy pages; <code>sameAs</code> links from the Organization or Person to Wikipedia, Wikidata, LinkedIn and other profiles.</td><td>Exact presence checks</td></tr>
+  <tr><td><code>citability</code><br>Citability</td><td>15%</td><td>Numbers and statistics per 1000 words; quotes with a named source; links to other sites, with extra credit for government, university, Wikipedia and research sources; years and dates in the text. Based on the GEO study (Aggarwal et al., 2023), where these raised how often AI answers used a page.</td><td>Rules of thumb, tuned for English</td></tr>
+  <tr><td><code>entity</code><br>Known entity</td><td>10%</td><td>A Wikidata item that names the site as its official website; a Wikipedia article through that item; the domain is in the latest Common Crawl, the open copy of the web that most AI models learn from.</td><td>Exact lookups. <code>na</code> when Wikidata or Common Crawl does not answer.</td></tr>
+</table>
+
+<p><strong>Not covered.</strong> Every report lists these in <code>notChecked</code>, so a score is never read as covering them:</p>
+<ul>
+  <li>Backlinks and domain authority: these need a paid index of links across the web.</li>
+  <li>Google rankings, keyword volume and traffic: these need Google Search scraping or paid tools.</li>
+  <li>Search Console data (indexing, clicks): only the site owner can see it.</li>
+  <li>Whether ChatGPT, Perplexity, Gemini, Claude or AI Overviews actually cite the site: this needs paid APIs.</li>
+  <li>Core Web Vitals from real visitors, and a full browser render (Lighthouse).</li>
+</ul>
+<p>For fixes written for the site itself, ask for <a href="#advice">AI advice</a> on the finished audit.</p>
 
 <h3 id="advice">AI advice on an audit</h3>
 <p><span class="ep">POST</span><span class="path">/api/audit/{id}/advice</span></p>
