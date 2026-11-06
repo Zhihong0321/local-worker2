@@ -72,7 +72,7 @@ test('the limits are the same', () => {
   }
   const [a, b] = constant('DefaultCentre');
   assert.equal(b.replace(/[[\]]/g, ''), a.replace(/^@\(|\)$/g, ''), `worker.ps1 changed DefaultCentre: ${PORT}`);
-  for (const [name, fallback] of [['PaceMs', /\$PaceMs = (\d+)/], ['LinkedInPaceMs', /\$LinkedInPaceMs = (\d+)/]]) {
+  for (const [name, fallback] of [['PaceMs', /\$PaceMs = (\d+)/]]) {
     const pyDefault = new RegExp(`^${name} = .* else (\\d+)$`, 'm').exec(py);
     assert.ok(pyDefault, `worker.py has no default for ${name}`);
     assert.equal(pyDefault[1], fallback.exec(ps1)[1], `worker.ps1 changed the default ${name}: ${PORT}`);
@@ -84,8 +84,6 @@ test('the same pinned packages are installed', () => {
     const [a, b] = constant(name);
     assert.deepEqual(quoted(b), quoted(a), `worker.ps1 changed ${name}: ${PORT}`);
   }
-  const scraper = (text) => /linkedin-scraper==[\d.]+/.exec(text)[0];
-  assert.equal(scraper(py), scraper(ps1), `worker.ps1 changed the LinkedIn scraper version: ${PORT}`);
 });
 
 test('Google refusals and streets are read the same way', () => {
@@ -98,7 +96,7 @@ test('Google refusals and streets are read the same way', () => {
 });
 
 test('the macOS worker runs the Windows worker\'s own job scripts', () => {
-  for (const name of ['fetch.py', 'linkedin_job.py', 'linkedin_login.py']) {
+  for (const name of ['fetch.py', 'audit.py']) {
     assert.ok(py.includes(`SHARED / '${name}'`), `worker.py does not run worker/${name}`);
     assert.ok(!fs.existsSync(path.join(root, 'worker-macos', 'app', name)), `worker-macos/app/${name} is a copy that will drift: delete it`);
   }

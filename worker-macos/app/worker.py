@@ -22,9 +22,9 @@
 # the keyword's family, then for a Business scan "shop/company in <street>" for
 # the streets the first pass found. The words come from the service on every job.
 #
-# It also takes web.fetch jobs (fetch.py), site.audit jobs (audit.py) and
-# linkedin.scrape jobs (linkedin_job.py), each in a process of its own, with packages this installs
-# into its own Python on first start. Scans work without them. Those scripts
+# It also takes web.fetch jobs (fetch.py) and site.audit jobs (audit.py), each
+# in a process of its own, with packages this installs into its own Python on
+# first start. Scans work without them. Those scripts
 # are the Windows worker's own, run from ../../worker, so a git pull brings
 # their fixes to both. test/macos-parity.test.mjs fails when worker.ps1's
 # Google request, field positions or limits change and this file does not.
@@ -56,7 +56,7 @@ from pathlib import Path
 
 APP = Path(__file__).resolve().parent
 ROOT = APP.parent
-# fetch.py, linkedin_job.py and linkedin_login.py, shared with the Windows worker.
+# fetch.py and audit.py (with its rule modules), shared with the Windows worker.
 SHARED = ROOT.parent / 'worker'
 # LOCAL_GMAP_WORKER_DATA runs a second, test worker beside this Mac's real one: its own
 # data folder and lock, and no launchd agent or desktop shortcut.
@@ -163,19 +163,6 @@ Name = Cfg.get('WORKER_NAME') or default_name()
 PaceMs = max(0, int(Cfg['GMAP_PACE_MS'])) if Cfg.get('GMAP_PACE_MS') else 500
 # WEB_FETCH=off keeps this Mac to Maps scans.
 FetchOn = Cfg.get('WEB_FETCH', '').lower() != 'off'
-LinkedInPython = Cfg.get('LINKEDIN_PYTHON', '')
-LinkedInSession = Cfg.get('LINKEDIN_SESSION', '')
-# Space LinkedIn requests on this Mac, including after a restart.
-LinkedInPaceMs = max(0, int(Cfg['LINKEDIN_PACE_MS'])) if Cfg.get('LINKEDIN_PACE_MS') else 60000
-LinkedInLastFile = DATA / 'linkedin-last-start.txt'
-LinkedInStateFile = DATA / 'linkedin-state.json'
-LinkedInState = {'state': 'ready', 'until': 0, 'sessionMtimeNs': 0}
-if LinkedInStateFile.exists():
-    try:
-        saved = json.loads(read_text(LinkedInStateFile))
-        LinkedInState = {'state': str(saved['state']), 'until': int(saved['until']), 'sessionMtimeNs': int(saved['sessionMtimeNs'])}
-    except (OSError, ValueError, KeyError, TypeError):
-        log('Could not read LinkedIn state; sign-in may need to be repeated.')
 Types = 'gmap.scan'
 # Time kept back from the job's deadline to post the result.
 PostMarginSec = 60
@@ -578,14 +565,6 @@ def invoke_scan(job, strategy):
 # The worker's own Python: the venv start.sh made, which this runs in.
 PyExe = sys.executable
 PyDir = Path(sys.prefix)
-if not LinkedInPython:
-    LinkedInPython = PyExe
-if not LinkedInSession:
-    LinkedInSession = str(DATA / 'linkedin_session.json')
-LinkedInStamp = DATA / 'linkedin-installed.txt'
-LinkedInReady = False
-NextLinkedInSetup = time.time()
-LoginAttempted = False
 # Pinned: fetch.py calls a private Scrapling helper. Changing a version here
 # reinstalls on every Mac's next start.
 FetchPackages = ['scrapling==0.5', 'curl_cffi==0.17.0', 'markdownify==1.2.3']
@@ -642,25 +621,6 @@ def install_pdf_reader():
         return True
     except Exception as e:
         log(f'PDF reading is off for now: setup failed ({e}). Trying again in an hour.')
-        return False
-
-
-# Install the scraper and browser into the worker's own Python. A custom Python
-# can still be supplied in worker.env.
-def install_linkedin():
-    want = f'{LinkedInPython} linkedin-scraper==3.1.2 playwright-chromium-v1'
-    if os.path.exists(LinkedInPython) and LinkedInStamp.exists() and read_text(LinkedInStamp).strip() == want:
-        return True
-    try:
-        log('setting up LinkedIn: installing scraper and Chromium (first start only)')
-        run([LinkedInPython, *PIP, 'linkedin-scraper==3.1.2'], 'pip')
-        run([LinkedInPython, '-m', 'playwright', 'install', 'chromium'], 'browser installation')
-        run([LinkedInPython, '-c', 'from linkedin_scraper import BrowserManager, PersonScraper, CompanyScraper'], 'the import check')
-        write_text(LinkedInStamp, want)
-        log('LinkedIn scraper is installed')
-        return True
-    except Exception as e:
-        log(f'LinkedIn setup failed: {e}. Trying again in an hour.')
         return False
 
 
@@ -895,72 +855,10 @@ def send_unsaved():
             log(f'kept result {file.stem} not sent: {e}')
 
 
-# ----------------------------------------------------------------- linkedin
-
-def now_ms():
-    return int(time.time() * 1000)
-
-
-def session_mtime_ns():
-    try:
-        return os.stat(LinkedInSession).st_mtime_ns
-    except OSError:
-        return None
-
-
-def run_linkedin_job(job):
-    global JobId
-    file = DATA / f"linkedin-{job['id']}.json"
-    pace_start = time.time()
-    waited_ms = 0
-    try:
-        last_ms = 0
-        if LinkedInLastFile.exists():
-            try:
-                last_ms = int(read_text(LinkedInLastFile).strip())
-            except ValueError:
-                pass
-        if last_ms > 0:
-            next_ms = last_ms + LinkedInPaceMs
-            while now_ms() < next_ms:
-                send_beat()
-                time.sleep(1)
-        waited_ms = int((time.time() - pace_start) * 1000)
-        write_text(LinkedInLastFile, str(now_ms()))
-        write_text(file, json.dumps(job.get('payload'), separators=(',', ':')))
-        line, err = run_job_script([LinkedInPython, str(SHARED / 'linkedin_job.py'), str(file)], to_int(job.get('timeoutMs')),
-                                   env={**os.environ, 'LINKEDIN_SESSION': LinkedInSession}, timeout_message='LinkedIn job timed out')
-        if not line:
-            raise RuntimeError(f'LinkedIn scraper returned no result: {err}')
-        answer = json.loads(line)
-        if not answer.get('ok'):
-            raise RuntimeError(str(answer.get('error')))
-        answer['result']['worker'] = Name
-        answer['result']['waitedMs'] = waited_ms
-        send_result(job['id'], job.get('payload'), True, answer['result'], '', 0, 'linkedin.scrape')
-    except Exception as e:
-        log(f"LinkedIn job {job['id']} failed: {e}")
-        message = str(e)
-        retry = 0
-        if message.startswith('rate_limited:'):
-            retry = 1800000
-            LinkedInState['state'] = 'rate_limited'
-            LinkedInState['until'] = now_ms() + retry
-        elif message.startswith('session_expired:'):
-            LinkedInState['state'] = 'session_expired'
-            LinkedInState['sessionMtimeNs'] = session_mtime_ns() or LinkedInState['sessionMtimeNs']
-        if LinkedInState['state'] != 'ready':
-            write_text(LinkedInStateFile, json.dumps(LinkedInState, separators=(',', ':')))
-        send_result(job['id'], job.get('payload'), False, None, f'{message} (waitedMs={waited_ms})', retry, 'linkedin.scrape')
-    finally:
-        file.unlink(missing_ok=True)
-        JobId = None
-
-
 # --------------------------------------------------------------------- main
 
 def main():
-    global FetchReady, NextSetup, PdfReady, NextPdfSetup, LinkedInReady, NextLinkedInSetup, LoginAttempted
+    global FetchReady, NextSetup, PdfReady, NextPdfSetup
     global Types, JobId, LastBeat
     log(f"Local Gmap Worker '{Name}' -> {Lab} (Google Maps list pages, {PaceMs} ms apart; web pages {'on' if FetchOn else 'off'})")
     backoff = 5
@@ -976,37 +874,17 @@ def main():
             if FetchReady and not PdfReady and time.time() >= NextPdfSetup:
                 PdfReady = install_pdf_reader()
                 NextPdfSetup = time.time() + 3600
-            if FetchReady and not LinkedInReady and time.time() >= NextLinkedInSetup:
-                LinkedInReady = install_linkedin()
-                NextLinkedInSetup = time.time() + 3600
-            if LinkedInReady and not os.path.exists(LinkedInSession) and not LoginAttempted:
-                LoginAttempted = True
-                log('LinkedIn login: sign in in the browser window, then wait for your feed.')
-                code = subprocess.run([LinkedInPython, str(SHARED / 'linkedin_login.py'), LinkedInSession]).returncode
-                if code or not os.path.exists(LinkedInSession):
-                    log('LinkedIn login was not completed. Restart the worker to try again.')
-                else:
-                    log('LinkedIn login saved.')
             resting = time.time() < rest_until
-            mtime = session_mtime_ns()
-            if LinkedInState['state'] == 'session_expired' and mtime is not None and mtime > LinkedInState['sessionMtimeNs']:
-                LinkedInState['state'] = 'ready'
-                LinkedInState['until'] = 0
-            if LinkedInState['state'] == 'rate_limited' and now_ms() >= LinkedInState['until']:
-                LinkedInState['state'] = 'ready'
-                LinkedInState['until'] = 0
             Types = ','.join(t for t in (
                 'gmap.scan' if not resting else None,
                 'web.fetch' if FetchReady else None,
                 'site.audit' if FetchReady else None,
-                'linkedin.scrape' if LinkedInReady and os.path.exists(LinkedInSession) and LinkedInState['state'] == 'ready' else None,
                 'site.lookup' if NodeReady else None,
             ) if t)
             if not Types:
                 time.sleep(min(25, max(1, int(rest_until - time.time()))))
                 continue
-            r = invoke_hub('GET', f"/api/jobs/next?worker={urllib.parse.quote(Name, safe='')}&types={Types}&wait=25"
-                                  f"&linkedinState={LinkedInState['state']}&linkedinCoolUntil={LinkedInState['until']}", None, 45)
+            r = invoke_hub('GET', f"/api/jobs/next?worker={urllib.parse.quote(Name, safe='')}&types={Types}&wait=25", None, 45)
             if r.status == 204:
                 backoff = 5
                 continue
@@ -1033,9 +911,6 @@ def main():
                     send_result(job['id'], posted_payload, False, None, str(e), 0, 'site.lookup')
                 finally:
                     JobId = None
-                continue
-            if job.get('type') == 'linkedin.scrape':
-                run_linkedin_job(job)
                 continue
             if job.get('type') == 'site.audit':
                 log(f"job {job['id']}: audit {payload.get('url')}")

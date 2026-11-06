@@ -21,8 +21,8 @@ the same results.
 
 - **Shared, change once:** `strategy.mjs` (keyword families, street forms, area-match
   share, default max). Both workers fetch it from the service on every job.
-- **Shared, change once:** `worker/fetch.py`, `worker/linkedin_job.py`,
-  `worker/linkedin_login.py`. The macOS worker runs these files from `worker/`.
+- **Shared, change once:** `worker/fetch.py`, `worker/audit.py` and its rule
+  modules (`worker/audit_*.py`). The macOS worker runs these files from `worker/`.
   Do not copy them into `worker-macos/`.
 - **Not shared, change both:** everything in `worker.ps1`. That covers the Google
   Maps request (`pb` string, URL, language), the field positions read from Google's

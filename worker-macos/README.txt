@@ -6,12 +6,11 @@ service. The service hands it a Maps job (for example "factory in Taman Daya"),
 the Mac reads the businesses from Google Maps on its own internet line, and
 posts them back.
 
-It also reads web pages and PDFs, and scrapes LinkedIn person and company pages
-using a LinkedIn account signed in on this Mac.
+It also reads web pages and PDFs, and runs SEO and GEO audits of websites.
 
 This is the macOS version of the Windows worker in ../worker. It takes the same
 jobs from the same service and returns the same results. It runs the Windows
-worker's own page and LinkedIn scripts (../worker/*.py), so it must stay in the
+worker's own page and audit scripts (../worker/*.py), so it must stay in the
 repository checkout, next to the worker folder.
 
 START
@@ -22,9 +21,8 @@ START
      API_KEY, unzip, copy LocalGmapWorker/worker.env), or copy
      worker.env.example to worker.env and fill in HUB_URL and WORKER_KEY.
   3. Double-click "Start Local Gmap Worker.command". It opens in Terminal. On
-     first start it downloads and installs the required components. When the
-     LinkedIn browser opens, sign in and wait for your feed. Keep the Terminal
-     window open. If macOS says the file cannot be opened, right-click it,
+     first start it downloads and installs the required components. Keep the
+     Terminal window open. If macOS says the file cannot be opened, right-click it,
      choose Open, then Open again. A "Local Worker v2" shortcut is put on the
      desktop.
   4. The worker starts automatically, in the background, when you sign in to
@@ -35,12 +33,8 @@ START
 NEEDS
   macOS on Apple silicon or Intel, and an internet connection. No
   admin password, Homebrew or Xcode. The first start downloads Python (through
-  uv), the page reader, the PDF reader, LinkedIn scraper and Chromium
-  automatically. Allow several minutes and disk space for the downloads. A
-  LinkedIn account and manual login are required. Google may reject sign-in
-  in an automated browser. If login expires, double-click "LinkedIn sign
-  in.command" to sign in again. Keep the LinkedIn session file private; it
-  contains login cookies.
+  uv), the page reader and the PDF reader automatically. Allow a few minutes
+  for the downloads.
 
   The worker keeps the Mac from sleeping while a scan runs (caffeinate). A Mac
   that is asleep or has its lid closed takes no jobs: for a Mac mini or an
@@ -54,7 +48,6 @@ WHERE THINGS ARE
     venv/               the worker's own Python and packages
     unsaved/            results the service did not take yet; offered again
                         on every start
-    linkedin_session.json
   ~/Library/LaunchAgents/local.gmapworker.plist   autostart
 
 UPDATE
@@ -79,6 +72,3 @@ SETTINGS (worker.env)
   WORKER_NAME        name shown by the service (default: mac-<this Mac's name>)
   GMAP_PACE_MS       pause between Google requests (default 500)
   WEB_FETCH=off      Maps scans only
-  LINKEDIN_PYTHON    a Python of your own for LinkedIn
-  LINKEDIN_SESSION   where the LinkedIn session is kept
-  LINKEDIN_PACE_MS   pause between LinkedIn jobs (default 60000)

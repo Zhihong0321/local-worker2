@@ -6,26 +6,20 @@ Worker API service. The service hands it a Maps job (for example "factory in
 Taman Daya"), the PC reads the businesses from Google Maps on its own internet
 line, and posts them back.
 
-It also reads web pages and PDFs, and scrapes LinkedIn person and company pages
-using a LinkedIn account signed in on this PC.
+It also reads web pages and PDFs, and runs SEO and GEO audits of websites.
 
 START
   1. Unzip this folder somewhere it can stay (for example C:\LocalGmapWorker).
   2. Double-click "Start Local Gmap Worker.cmd". On first start it downloads
-     and installs the required components. When the LinkedIn browser opens,
-     sign in and wait for your feed. Keep the worker window open. If Windows
+     and installs the required components. Keep the worker window open. If Windows
      asks whether to run the file, choose Run. A desktop shortcut is created.
   3. The worker starts automatically when you sign in to Windows. Use
      "Disable autostart.cmd" to turn this off, or "Enable autostart.cmd" to
      turn it back on.
 
 NEEDS
-  Windows 10 or 11 and an internet connection. The first start downloads Python,
-  the PDF reader, LinkedIn scraper and Chromium automatically. Allow several
-  minutes and disk space for the downloads. A LinkedIn account and manual
-  login are required. Google may reject sign-in in an automated browser.
-  If login expires, double-click "LinkedIn sign in.cmd" to sign in again.
-  Keep the LinkedIn session file private; it contains login cookies.
+  Windows 10 or 11 and an internet connection. The first start downloads Python
+  and the PDF reader automatically. Allow a few minutes for the downloads.
 
 HOW IT WORKS
   Google Maps fills its result list from pages of 20 businesses, each with its
@@ -52,12 +46,8 @@ SETTINGS (worker.env)
   WORKER_NAME        optional; default pc-<computer name>
   GMAP_PACE_MS       optional; pause between Google requests, default 500
   WEB_FETCH          optional; off = Maps jobs only, no web pages
-  LINKEDIN_PYTHON    optional; use a separately installed Python
-  LINKEDIN_SESSION   optional; session file path
-  LINKEDIN_PACE_MS   optional; time between LinkedIn jobs, default 60000 ms
 
 FILES ON THIS PC
   %LOCALAPPDATA%\LocalGmapWorker\worker.log   what the worker did
   %LOCALAPPDATA%\LocalGmapWorker\unsaved\     results the service could not take
   %LOCALAPPDATA%\LocalGmapWorker\python\      Python for web pages and PDFs
-  %LOCALAPPDATA%\LocalGmapWorker\linkedin_session.json   private login session

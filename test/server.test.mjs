@@ -17,54 +17,6 @@ test.after(() => server.close());
 
 const call = (path, headers, opts = {}) => fetch(base + path, { headers, ...opts });
 
-test('LinkedIn cooldown does not block Maps or fetch and clears independently', async () => {
-  const worker = 'pc-li-cool';
-  const posted = await (await call('/api/linkedin', api, {method:'POST', body:JSON.stringify({kind:'company',url:'https://linkedin.com/company/acme/',worker})})).json();
-  const {job} = await (await call(`/api/jobs/next?worker=${worker}&types=linkedin.scrape&wait=0`, wk)).json();
-  assert.equal(job.id, posted.job.id);
-  await call(`/api/jobs/${job.id}/result`, wk, {method:'POST', body:JSON.stringify({worker,type:'linkedin.scrape',ok:false,error:'rate_limited: test',retryAfterMs:60000})});
-  const state = (await (await call('/api/workers', api)).json()).workers.find(w => w.name === worker);
-  assert.equal(state.coolReason, 'LinkedIn rate limited');
-  assert.ok(state.linkedinCoolUntil);
-  assert.equal((await call(`/api/jobs/next?worker=${worker}&types=linkedin.scrape&wait=0`, wk)).status, 204);
-  const fetchJob = (await (await call('/api/fetch', api, {method:'POST',body:JSON.stringify({url:'https://example.com/',worker,wait:0})})).json()).job;
-  const claimed = (await (await call(`/api/jobs/next?worker=${worker}&types=web.fetch,linkedin.scrape&wait=0`, wk)).json()).job;
-  assert.equal(claimed.id, fetchJob.id);
-  await call(`/api/jobs/${claimed.id}/result`, wk, {method:'POST',body:JSON.stringify({worker,ok:true,result:{}})});
-  await call(`/api/jobs/next?worker=${worker}&types=web.fetch&wait=0&linkedinState=ready`, wk);
-  const after = (await (await call('/api/workers', api)).json()).workers.find(w => w.name === worker);
-  assert.equal(after.linkedinCoolUntil, null);
-});
-
-test('expired LinkedIn session blocks claims until worker reports renewal', async () => {
-  const worker = 'pc-li-expired';
-  const request = {kind:'person', url:'https://linkedin.com/in/example/', worker};
-  const first = (await (await call('/api/linkedin', api, {method:'POST',body:JSON.stringify(request)})).json()).job;
-  await call(`/api/jobs/next?worker=${worker}&types=linkedin.scrape&wait=0`, wk);
-  await call(`/api/jobs/${first.id}/result`, wk, {method:'POST',body:JSON.stringify({worker,type:'linkedin.scrape',ok:false,error:'session_expired: login'})});
-  const second = (await (await call('/api/linkedin', api, {method:'POST',body:JSON.stringify(request)})).json()).job;
-  assert.equal((await call(`/api/jobs/next?worker=${worker}&types=linkedin.scrape&wait=0`, wk)).status, 204);
-  const state = (await (await call('/api/workers', api)).json()).workers.find(w => w.name === worker);
-  assert.equal(state.linkedinSessionExpired, true);
-  const resumed = (await (await call(`/api/jobs/next?worker=${worker}&types=linkedin.scrape&wait=0&linkedinState=ready`, wk)).json()).job;
-  assert.equal(resumed.id, second.id);
-  await call(`/api/jobs/${second.id}/result`, wk, {method:'POST',body:JSON.stringify({worker,ok:false,error:'test complete'})});
-});
-
-test('LinkedIn job is validated and routed only to an opted-in worker', async () => {
-  for (const body of [{}, {kind:'person', url:'https://example.com/in/a'}, {kind:'company', url:'https://linkedin.com/in/a'}, {kind:'person', url:'https://linkedin.com/in/a?x=1'}]) {
-    assert.equal((await call('/api/linkedin', api, {method:'POST', body:JSON.stringify(body)})).status, 400);
-  }
-  const posted = await (await call('/api/linkedin', api, {method:'POST', body:JSON.stringify({kind:'person', url:'https://www.linkedin.com/in/example/', worker:'pc-linkedin'})})).json();
-  assert.equal((await call('/api/jobs/next?worker=pc-linkedin&types=web.fetch&wait=0', wk)).status, 204);
-  const {job} = await (await call('/api/jobs/next?worker=pc-linkedin&types=linkedin.scrape&wait=1', wk)).json();
-  assert.equal(job.id, posted.job.id);
-  assert.equal(job.type, 'linkedin.scrape');
-  await call(`/api/jobs/${job.id}/result`, wk, {method:'POST', body:JSON.stringify({worker:'pc-linkedin', ok:true, result:{data:{name:'Example'}}})});
-  const result = await (await call(`/api/linkedin/${job.id}`, api)).json();
-  assert.equal(result.job.result.data.name, 'Example');
-});
-
 test('health is open, everything else needs a key', async () => {
   assert.equal((await call('/health', {})).status, 200);
   assert.equal((await call('/api/workers', {})).status, 401);
@@ -308,10 +260,10 @@ test('package zip carries the worker key', async () => {
   const buf = Buffer.from(await r.arrayBuffer());
   assert.equal(buf.readUInt32LE(0), 0x04034b50);
   assert.ok(buf.includes('LocalGmapWorker/app/worker.ps1'));
-  assert.ok(buf.includes('LocalGmapWorker/app/linkedin_job.py'));
-  assert.ok(buf.includes('LocalGmapWorker/app/linkedin_login.py'));
-  assert.ok(buf.includes('LocalGmapWorker/app/linkedin_signin.ps1'));
-  assert.ok(buf.includes('LocalGmapWorker/LinkedIn sign in.cmd'));
+  for (const name of ['audit.py', 'audit_ai_access.py', 'audit_content.py', 'audit_onpage.py', 'audit_schema.py']) {
+    assert.ok(buf.includes('LocalGmapWorker/app/' + name), name);
+  }
+  assert.ok(!buf.includes('linkedin'), 'the LinkedIn scraper is gone');
 });
 
 const fixtureIndex = JSON.parse(fs.readFileSync(new URL('./fixtures/handlers/index.json', import.meta.url)));
@@ -597,6 +549,11 @@ test('a started hub runs the handler check once soon after start, without waitin
   assert.equal(before, null);
   assert.ok(after?.id, 'no check run 600 ms after start');
   assert.equal(after.handlers.length, 3);
+});
+
+test('LinkedIn is gone: no route, and a worker asking for linkedin.scrape gets nothing for it', async () => {
+  assert.equal((await call('/api/linkedin', api, { method: 'POST', body: JSON.stringify({ kind: 'person', url: 'https://www.linkedin.com/in/example/' }) })).status, 404);
+  assert.equal((await call('/api/jobs/next?worker=pc-old&types=linkedin.scrape&wait=0', wk)).status, 204);
 });
 
 test('AI advice answers 503 when no model is set up on the service', async () => {
