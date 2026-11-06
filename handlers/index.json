@@ -2629,6 +2629,28 @@
       "version": "105ba4396ef2"
     },
     {
+      "id": "KR-naver.com/w1",
+      "country": "KR",
+      "host": "naver.com",
+      "task": "KR-naver.com",
+      "want": "w1",
+      "question": "Which Naver Place listings come back for the company's name and area?",
+      "source_name": "네이버 플레이스 (Naver Place)",
+      "source_url": "https://m.search.naver.com/",
+      "tier": 2,
+      "method": "embedded_json",
+      "pdf": false,
+      "canary": {
+        "found": "은민에스엔디 서울 강남구",
+        "not_found": "Magellan Logistics Pty Ltd"
+      },
+      "file": "KR/KR-naver.com.w1.mjs",
+      "tier4": null,
+      "browser_steps": null,
+      "verified_at": "2026-11-06T04:37:16.834684Z",
+      "version": "d5a4dce0b9db"
+    },
+    {
       "id": "KR-naward.or.kr/w1",
       "country": "KR",
       "host": "naward.or.kr",
