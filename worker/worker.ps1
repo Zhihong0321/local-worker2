@@ -518,6 +518,29 @@ function Install-PdfReader {
   }
 }
 
+# LinkedIn scraping was removed: LinkedIn blocked it too often. On every start,
+# delete what it left on this PC, if anything: the login cookies, the old venv
+# and stamps, the scraper in this worker's own Python, and the old scripts.
+# Playwright's own uninstall drops only browsers no other Playwright here uses.
+function Remove-LinkedInLeftovers {
+  $stamp = Join-Path $Data 'linkedin-installed.txt'
+  $found = @(Get-ChildItem -LiteralPath $Data -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'linkedin*' })
+  $old = @(@('linkedin_job.py', 'linkedin_login.py', 'linkedin_signin.ps1') | ForEach-Object { Join-Path $PSScriptRoot $_ })
+  $old += Join-Path (Split-Path $PSScriptRoot -Parent) 'LinkedIn sign in.cmd'
+  $old = @($old | Where-Object { Test-Path -LiteralPath $_ })
+  if (-not $found.Count -and -not $old.Count) { return }
+  Log 'LinkedIn scraping was removed: deleting its login session, browser and packages from this PC'
+  if ((Test-Path -LiteralPath $stamp) -and (Test-Path -LiteralPath $PyExe) -and [IO.File]::ReadAllText($stamp).Trim().StartsWith($PyExe + ' ')) {
+    & $PyExe -m playwright uninstall | Out-Null
+    & $PyExe -m pip uninstall --yes --quiet --disable-pip-version-check linkedin-scraper playwright | Out-Null
+  }
+  foreach ($item in $found) {
+    try { Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop }
+    catch { Log "  could not delete $($item.Name): $($_.Exception.Message)" }
+  }
+  foreach ($file in $old) { Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue }
+}
+
 # One web.fetch job, by fetch.py in its own process; it gets the payload in a
 # file and prints one JSON line.
 function Invoke-Fetch($Job) {
@@ -766,6 +789,7 @@ function Send-Unsaved {
 # --------------------------------------------------------------------- main
 
 Log "Local Gmap Worker '$Name' -> $Lab (Google Maps list pages, $PaceMs ms apart; web pages $(if ($FetchOn) { 'on' } else { 'off' }))"
+Remove-LinkedInLeftovers
 $backoff = 5
 # While Google rests this line, keep taking the other ready job types.
 $restUntil = Get-Date

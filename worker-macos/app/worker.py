@@ -624,6 +624,34 @@ def install_pdf_reader():
         return False
 
 
+# LinkedIn scraping was removed: LinkedIn blocked it too often. On every start,
+# delete what it left on this Mac, if anything: the login cookies, the old venv
+# and stamps, and the scraper in this worker's own Python. (git pull removes the
+# old scripts and launcher.) Playwright's own uninstall drops only browsers no
+# other Playwright here uses.
+def remove_linkedin_leftovers():
+    stamp = DATA / 'linkedin-installed.txt'
+    found = list(DATA.glob('linkedin*'))
+    if not found:
+        return
+    log('LinkedIn scraping was removed: deleting its login session, browser and packages from this Mac')
+    if stamp.exists() and os.path.exists(PyExe) and read_text(stamp).strip().startswith(PyExe + ' '):
+        for args in (['-m', 'playwright', 'uninstall'],
+                     ['-m', 'pip', 'uninstall', '--yes', '--quiet', '--disable-pip-version-check', 'linkedin-scraper', 'playwright']):
+            try:
+                subprocess.run([PyExe, *args], capture_output=True, timeout=600)
+            except (OSError, subprocess.SubprocessError) as e:
+                log(f'  could not remove the LinkedIn packages: {e}')
+    for item in found:
+        try:
+            if item.is_dir() and not item.is_symlink():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+        except OSError as e:
+            log(f'  could not delete {item.name}: {e}')
+
+
 # Run one job script in its own process; it gets the payload in a file and
 # prints one JSON line. The answer is the last line: a library that prints to
 # stdout must not break it.
@@ -861,6 +889,7 @@ def main():
     global FetchReady, NextSetup, PdfReady, NextPdfSetup
     global Types, JobId, LastBeat
     log(f"Local Gmap Worker '{Name}' -> {Lab} (Google Maps list pages, {PaceMs} ms apart; web pages {'on' if FetchOn else 'off'})")
+    remove_linkedin_leftovers()
     backoff = 5
     # While Google rests this line, keep taking the other ready job types.
     rest_until = time.time()
