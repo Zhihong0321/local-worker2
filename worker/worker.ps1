@@ -670,7 +670,9 @@ function Invoke-Lookup($Job) {
   try {
     [IO.File]::WriteAllText($file, [string]$p.source, (New-Object Text.UTF8Encoding $false))
     $psi = New-Object Diagnostics.ProcessStartInfo $NodeExe
-    $args_ = @('--permission', "--allow-fs-read=$file", "--allow-fs-read=$LookupRunner", $LookupRunner, $file, [string]$p.keyword)
+    # --use-system-ca: the empty environment below has no NODE_USE_SYSTEM_CA, and some
+    # government sites chain to CAs only the Windows store has.
+    $args_ = @('--permission', '--use-system-ca', "--allow-fs-read=$file", "--allow-fs-read=$LookupRunner", $LookupRunner, $file, [string]$p.keyword)
     $psi.Arguments = ($args_ | ForEach-Object { Quote-NodeArgument $_ }) -join ' '
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true

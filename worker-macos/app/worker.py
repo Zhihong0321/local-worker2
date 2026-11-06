@@ -777,7 +777,9 @@ def invoke_lookup(job):
             file = Path(source.name)
             source.write(p['source'])
         timeout_ms = to_int(job.get('timeoutMs'))
-        args = [str(NodeExe), '--permission', f'--allow-fs-read={file}', f'--allow-fs-read={LookupRunner}',
+        # --use-system-ca: the empty environment below has no NODE_USE_SYSTEM_CA, and some
+        # government sites chain to CAs only the system store has.
+        args = [str(NodeExe), '--permission', '--use-system-ca', f'--allow-fs-read={file}', f'--allow-fs-read={LookupRunner}',
                 str(LookupRunner), str(file), p['keyword']]
         # Both streams at once; do not pass worker credentials or NODE_OPTIONS.
         line, err = run_job_script(args, timeout_ms, env={}, timeout_message=f'timed out after {timeout_ms} ms')
