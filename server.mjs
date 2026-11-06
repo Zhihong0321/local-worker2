@@ -46,6 +46,8 @@ const LOOKUP_LEASE_GRACE_MS = 30_000;
 // Canaries wait behind all earlier checks for their host, without a caller on the line.
 const LOOKUP_CHECK_QUEUE_TIMEOUT_MS = 24 * 3_600_000;
 const HANDLER_CHECK_INTERVAL_MS = Number(process.env.HANDLER_CHECK_INTERVAL_MS ?? 24 * 3_600_000);
+/** Health lives in memory, so every start runs one check this soon, then one each interval. */
+const HANDLER_CHECK_START_DELAY_MS = Number(process.env.HANDLER_CHECK_START_DELAY_MS ?? 60_000);
 const HANDLERS_DIR = path.resolve(process.env.HANDLERS_DIR ?? path.join(import.meta.dirname, 'handlers'));
 /** A pending job no worker claims within this long fails, so a caller never waits forever. */
 const QUEUE_TIMEOUT_MS = Number(process.env.QUEUE_TIMEOUT_MS) || 1_800_000;
@@ -199,10 +201,13 @@ function startCheck(selected) {
   return checkRun;
 }
 
+function scheduledCheck() {
+  if (!checkRun || checkRun.finished) startCheck([...handlers.values()].filter(runnable));
+}
+
 if (HANDLER_CHECK_INTERVAL_MS > 0 && !process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') {
-  setInterval(() => {
-    if (!checkRun || checkRun.finished) startCheck([...handlers.values()].filter(runnable));
-  }, HANDLER_CHECK_INTERVAL_MS).unref();
+  setTimeout(scheduledCheck, Math.max(0, HANDLER_CHECK_START_DELAY_MS)).unref();
+  setInterval(scheduledCheck, HANDLER_CHECK_INTERVAL_MS).unref();
 }
 
 function touch(name, ip) {

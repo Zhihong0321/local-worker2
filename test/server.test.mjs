@@ -444,3 +444,27 @@ test('missing handler directory starts normally with an empty library', async (t
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { handlers: [] });
 });
+
+test('a started hub runs the handler check once soon after start, without waiting a whole interval', async () => {
+  // A child process: the test runner's NODE_TEST_CONTEXT turns the schedule off in this one.
+  const { spawn } = await import('node:child_process');
+  const env = { ...process.env, HANDLER_CHECK_INTERVAL_MS: String(24 * 3_600_000), HANDLER_CHECK_START_DELAY_MS: '100' };
+  delete env.NODE_TEST_CONTEXT;
+  const script = `
+    const { start } = await import(${JSON.stringify(new URL('../server.mjs', import.meta.url).href)});
+    const s = await start(0);
+    const get = async () => (await (await fetch('http://localhost:' + s.address().port + '/api/handlers/check', { headers: { authorization: 'Bearer ' + process.env.API_KEY } })).json()).run;
+    const before = await get();
+    await new Promise((r) => setTimeout(r, 600));
+    console.log(JSON.stringify({ before, after: await get() }));
+    s.closeAllConnections();
+    s.close();`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { env, stdio: ['ignore', 'pipe', 'inherit'] });
+  let out = '';
+  child.stdout.on('data', (d) => { out += d; });
+  await new Promise((resolve) => child.on('exit', resolve));
+  const { before, after } = JSON.parse(out.trim().split('\n').at(-1));
+  assert.equal(before, null);
+  assert.ok(after?.id, 'no check run 600 ms after start');
+  assert.equal(after.handlers.length, 3);
+});

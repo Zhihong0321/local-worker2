@@ -210,7 +210,7 @@ curl -X DELETE -H "Authorization: Bearer $API_KEY" "https://YOUR-SERVICE/api/lin
 <p>When a caller's lookup and canary lookups wait for the same host, the caller's goes first.</p>
 <p><span class="ep">GET</span><span class="path">/api/handlers/check</span></p>
 <p>Returns the last run, or <code>{ "run": null }</code> before the first check. A run has <code>id</code>, <code>started</code>, <code>finished</code> (null while running), <code>counts: { ok, broken, pending }</code>, and <code>handlers</code> containing each handler's verdict, reason, and both sides' job ids and outcomes.</p>
-<p class="note">The hub starts a check every 24 hours by default, skipping a tick while a check is still running. Set <code>HANDLER_CHECK_INTERVAL_MS</code> to change the interval, or <code>0</code> to disable it. Tests disable this timer. The library comes from <code>HANDLERS_DIR</code> (default <code>&lt;repo&gt;/handlers</code>); a missing library loads as zero handlers. Health and check runs are held in memory and cleared on redeploy.</p>
+<p class="note">The hub starts a check 60 seconds after it starts (<code>HANDLER_CHECK_START_DELAY_MS</code>), then every 24 hours by default, skipping a tick while a check is still running. Set <code>HANDLER_CHECK_INTERVAL_MS</code> to change the interval, or <code>0</code> to disable both. Tests disable this timer. The library comes from <code>HANDLERS_DIR</code> (default <code>&lt;repo&gt;/handlers</code>); a missing library loads as zero handlers. Health and check runs are held in memory and cleared on redeploy.</p>
 
 <h2 id="get">Get, cancel and list jobs</h2>
 <h3><span class="ep">GET</span><span class="path">/api/scan/{id}?wait=60</span></h3>
