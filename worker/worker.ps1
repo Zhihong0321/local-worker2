@@ -30,7 +30,10 @@ $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $Root = Split-Path $PSScriptRoot -Parent
-$Data = Join-Path $env:LOCALAPPDATA 'LocalGmapWorker'
+# LOCAL_GMAP_WORKER_DATA runs a second, test worker beside this PC's real one: its own
+# data folder and lock, and no Startup or desktop shortcut.
+$TestData = [string]$env:LOCAL_GMAP_WORKER_DATA
+$Data = $(if ($TestData) { [IO.Path]::GetFullPath($TestData) } else { Join-Path $env:LOCALAPPDATA 'LocalGmapWorker' })
 $LogFile = Join-Path $Data 'worker.log'
 New-Item -ItemType Directory -Force $Data | Out-Null
 
@@ -120,7 +123,9 @@ $MaxPages = 15
 $DefaultCentre = @(3.139, 101.6869)
 
 # One worker per PC: autostart and a double click must not run two.
-$mutex = New-Object Threading.Mutex($false, 'Local\LocalGmapWorker')
+$MutexName = 'Local\LocalGmapWorker'
+if ($TestData) { $MutexName += '-' + (($Data.ToLower() -replace '[^a-z0-9]', '-').Trim('-')) }
+$mutex = New-Object Threading.Mutex($false, $MutexName)
 if (-not $mutex.WaitOne(0)) {
   Write-Host 'The Local Gmap Worker is already running on this PC.'
   exit 2
@@ -131,7 +136,7 @@ Get-ChildItem -LiteralPath $Data -Filter 'lookup-*.mjs' -File -ErrorAction Silen
 
 # Enable sign-in startup once on first setup. Disabling it later stays disabled.
 $AutostartMark = Join-Path $Data 'autostart-configured.txt'
-if (-not (Test-Path $AutostartMark)) {
+if (-not $TestData -and -not (Test-Path $AutostartMark)) {
   try {
     $startupLink = Join-Path ([Environment]::GetFolderPath('Startup')) 'Local Gmap Worker.lnk'
     $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($startupLink)
@@ -150,7 +155,7 @@ Get-ChildItem $Root -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
 # it at this folder again if the folder moved; one the user deleted stays gone.
 $DesktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Local Worker v2.lnk'
 $DesktopMark = Join-Path $Data 'desktop-shortcut.txt'
-if (-not (Test-Path $DesktopMark) -or (Test-Path $DesktopLink)) {
+if (-not $TestData -and (-not (Test-Path $DesktopMark) -or (Test-Path $DesktopLink))) {
   try {
     $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($DesktopLink)
     $target = Join-Path $Root 'Start Local Gmap Worker.cmd'

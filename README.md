@@ -47,6 +47,66 @@ sign in to LinkedIn. The zip holds `WORKER_KEY`, an HMAC of `API_KEY`: it
 only reaches the worker routes. Rotating `API_KEY` means downloading a fresh
 package.
 
+## Site lookup
+
+`POST /api/lookup {"handler":"MY-lpeph.gov.my/w1","keyword":"..."}` runs one
+handler from `handlers/` (listed in `handlers/index.json`) on a worker PC and
+returns its answer unchanged: `status` is `found`, `not_found`,
+`couldnt_check` or `layout_changed`, with `records`. The hub puts the handler's
+source in the job; the worker runs it with its own portable Node 24
+(`%LOCALAPPDATA%\LocalGmapWorker\node`, set up on first start) under
+`--permission` and `--use-system-ca`, one process per job, with an empty
+environment. The hub runs one lookup per host at a time. `GET /api/handlers`
+shows each handler's health; the hub checks every handler's canary keywords
+60 s after it starts (`HANDLER_CHECK_START_DELAY_MS`) and then daily
+(`HANDLER_CHECK_INTERVAL_MS`, `0` turns both off). Full routes on the API page
+(`/`, `docs/index.html`).
+
+## Run a test hub and worker on Windows
+
+This runs beside the PC's real worker without touching it: the test worker gets
+its own data folder and lock from `LOCAL_GMAP_WORKER_DATA`, and with that set it
+makes no Startup or desktop shortcut. Run it from a checkout of this repo, not
+from the real worker's folder. PowerShell, from the repo root.
+
+1. Start a local hub (window 1). `HANDLER_CHECK_INTERVAL_MS=0` keeps it from
+   sending every handler's canary to your test worker at start.
+
+   ```powershell
+   $env:API_KEY = 'test-api-key-0123456789'; $env:PORT = '18080'; $env:HANDLER_CHECK_INTERVAL_MS = '0'
+   node server.mjs
+   ```
+
+2. Write `worker.env` in the repo root (git ignores it). `WEB_FETCH=off` skips
+   the Python setup; site lookup needs only Node.
+
+   ```powershell
+   $env:API_KEY = 'test-api-key-0123456789'
+   $key = node -e "import('./server.mjs').then(m=>{console.log(m.workerKey());process.exit(0)})"
+   "HUB_URL=http://localhost:18080`nWORKER_KEY=$key`nWORKER_NAME=test-pc`nWEB_FETCH=off" | Set-Content -Encoding ascii worker.env
+   ```
+
+3. Start the test worker (window 2). Its first start downloads Node (about
+   30 MB) into the test data folder; wait for `site lookup is ready` in the log.
+
+   ```powershell
+   $env:LOCAL_GMAP_WORKER_DATA = "$env:TEMP\LocalGmapWorker-test"
+   powershell -NoProfile -ExecutionPolicy Bypass -File worker\worker.ps1
+   ```
+
+4. Post a lookup pinned to it (window 3), or check one handler's canaries:
+
+   ```powershell
+   $h = @{ Authorization = 'Bearer test-api-key-0123456789' }
+   $body = '{"handler":"MY-lpeph.gov.my/w1","keyword":"CHESTER PROPERTIES SDN BHD","worker":"test-pc"}'
+   (Invoke-RestMethod -Method Post http://localhost:18080/api/lookup -Headers $h -ContentType 'application/json' -Body $body).job.result | ConvertTo-Json -Depth 6
+   Invoke-RestMethod -Method Post http://localhost:18080/api/handlers/check -Headers $h -ContentType 'application/json' -Body '{"handler":"MY-apps.span.gov.my/w1"}' | Out-Null
+   (Invoke-RestMethod http://localhost:18080/api/handlers/check -Headers $h).run.handlers | ConvertTo-Json -Depth 4
+   ```
+
+5. Stop with Ctrl+C in windows 1 and 2, then
+   `Remove-Item worker.env; Remove-Item -Recurse "$env:TEMP\LocalGmapWorker-test"`.
+
 ## API
 
 All routes take `Authorization: Bearer <API_KEY>` (or `x-api-key`).

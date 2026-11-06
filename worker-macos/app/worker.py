@@ -58,7 +58,10 @@ APP = Path(__file__).resolve().parent
 ROOT = APP.parent
 # fetch.py, linkedin_job.py and linkedin_login.py, shared with the Windows worker.
 SHARED = ROOT.parent / 'worker'
-DATA = Path(os.environ.get('LOCAL_GMAP_WORKER_DATA') or Path.home() / 'Library' / 'Application Support' / 'LocalGmapWorker')
+# LOCAL_GMAP_WORKER_DATA runs a second, test worker beside this Mac's real one: its own
+# data folder and lock, and no launchd agent or desktop shortcut.
+TestData = os.environ.get('LOCAL_GMAP_WORKER_DATA') or ''
+DATA = Path(TestData or Path.home() / 'Library' / 'Application Support' / 'LocalGmapWorker')
 LOG_FILE = DATA / 'worker.log'
 DATA.mkdir(parents=True, exist_ok=True)
 
@@ -197,7 +200,7 @@ for _stale in DATA.glob('lookup-*.mjs'):
     _stale.unlink(missing_ok=True)
 
 # Enable sign-in startup once on first setup. Disabling it later stays disabled.
-if not AUTOSTART_MARK.exists():
+if not TestData and not AUTOSTART_MARK.exists():
     try:
         write_agent()
         write_text(AUTOSTART_MARK, 'configured')
@@ -212,7 +215,7 @@ subprocess.run(['xattr', '-dr', 'com.apple.quarantine', str(ROOT)], capture_outp
 # it at this folder again if the folder moved; one the user deleted stays gone.
 DesktopLink = Path.home() / 'Desktop' / 'Local Worker v2.command'
 DesktopMark = DATA / 'desktop-shortcut.txt'
-if not DesktopMark.exists() or DesktopLink.is_symlink():
+if not TestData and (not DesktopMark.exists() or DesktopLink.is_symlink()):
     try:
         if not DesktopLink.is_symlink() or os.readlink(DesktopLink) != str(LAUNCHER):
             if DesktopLink.is_symlink():

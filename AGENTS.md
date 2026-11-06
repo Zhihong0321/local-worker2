@@ -65,8 +65,9 @@ the same results.
   Then put a `worker.env` with `HUB_URL=http://localhost:18080` and the worker key
   (`API_KEY=test-api-key-0123456789 node -e "import('./server.mjs').then(m=>{console.log(m.workerKey());process.exit(0)})"`)
   in a copy of the repository, set `LOCAL_GMAP_WORKER_DATA` to a scratch folder
-  holding `autostart-configured.txt` and `desktop-shortcut.txt`, and run
+  (with it set, the worker makes no launchd agent or desktop shortcut), and run
   `Start Local Gmap Worker.command`. Post a small scan with `POST /api/scan`
   (`max` 20) so you send Google only a request or two.
-- The Windows worker can only be run on Windows. If you changed it without running
-  it, say so.
+- The Windows worker can only be run on Windows: README.md, "Run a test hub and
+  worker on Windows", has the steps, the same `LOCAL_GMAP_WORKER_DATA` override
+  included. If you changed it without running it, say so.
