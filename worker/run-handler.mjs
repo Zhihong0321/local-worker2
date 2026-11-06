@@ -20,8 +20,14 @@ function fail(error) {
 
 process.on('uncaughtException', fail);
 process.on('unhandledRejection', fail);
-// An unresolved promise alone does not keep Node alive. Let the worker time it out.
-setInterval(() => {}, 60_000);
+// The worker holds stdin open and never writes to it. Waiting on it keeps Node alive
+// for an unresolved promise (the worker times that out), and when the worker dies its
+// end closes, so this process exits instead of running on as an orphan.
+const orphaned = () => { if (!finished) { finished = true; exit(1); } };
+process.stdin.on('end', orphaned);
+process.stdin.on('close', orphaned);
+process.stdin.on('error', orphaned);
+process.stdin.resume();
 console.log = console.error.bind(console);
 console.info = console.log;
 console.debug = console.log;

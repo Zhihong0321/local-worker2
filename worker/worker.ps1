@@ -126,6 +126,9 @@ if (-not $mutex.WaitOne(0)) {
   exit 2
 }
 
+# A worker that died mid-lookup leaves its handler file behind.
+Get-ChildItem -LiteralPath $Data -Filter 'lookup-*.mjs' -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+
 # Enable sign-in startup once on first setup. Disabling it later stays disabled.
 $AutostartMark = Join-Path $Data 'autostart-configured.txt'
 if (-not (Test-Path $AutostartMark)) {
@@ -678,6 +681,8 @@ function Invoke-Lookup($Job) {
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
+    # Held open, never written: the runner exits when this worker dies and it closes.
+    $psi.RedirectStandardInput = $true
     $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
     $psi.StandardErrorEncoding = [Text.Encoding]::UTF8
     # Do not pass worker credentials or inherited NODE_OPTIONS to a handler.

@@ -192,6 +192,10 @@ except OSError:
     print('The Local Gmap Worker is already running on this Mac.')
     sys.exit(2)
 
+# A worker that died mid-lookup leaves its handler file behind.
+for _stale in DATA.glob('lookup-*.mjs'):
+    _stale.unlink(missing_ok=True)
+
 # Enable sign-in startup once on first setup. Disabling it later stays disabled.
 if not AUTOSTART_MARK.exists():
     try:
@@ -660,11 +664,17 @@ def install_linkedin():
 # Run one job script in its own process; it gets the payload in a file and
 # prints one JSON line. The answer is the last line: a library that prints to
 # stdout must not break it.
-def run_job_script(args, timeout_ms, env=None, timeout_message='the job timed out'):
+def run_job_script(args, timeout_ms, env=None, timeout_message='the job timed out', hold_stdin=False):
+    # hold_stdin: a pipe held open, never written; the child sees it close if this worker dies.
+    hold = os.pipe() if hold_stdin else None
     try:
-        proc = subprocess.run(args, capture_output=True, timeout=timeout_ms / 1000, env=env)
+        proc = subprocess.run(args, capture_output=True, timeout=timeout_ms / 1000, env=env, stdin=hold[0] if hold else None)
     except subprocess.TimeoutExpired:
         raise RuntimeError(timeout_message)
+    finally:
+        if hold:
+            os.close(hold[0])
+            os.close(hold[1])
     lines = proc.stdout.decode('utf-8', errors='replace').strip().splitlines()
     return (lines[-1] if lines else ''), proc.stderr.decode('utf-8', errors='replace').strip()
 
@@ -782,7 +792,7 @@ def invoke_lookup(job):
         args = [str(NodeExe), '--permission', '--use-system-ca', f'--allow-fs-read={file}', f'--allow-fs-read={LookupRunner}',
                 str(LookupRunner), str(file), p['keyword']]
         # Both streams at once; do not pass worker credentials or NODE_OPTIONS.
-        line, err = run_job_script(args, timeout_ms, env={}, timeout_message=f'timed out after {timeout_ms} ms')
+        line, err = run_job_script(args, timeout_ms, env={}, timeout_message=f'timed out after {timeout_ms} ms', hold_stdin=True)
         if not line:
             raise RuntimeError('handler printed nothing')
         try:
