@@ -18,6 +18,7 @@ class CompanyAboutTests(unittest.TestCase):
             ('https://www.linkedin.com/checkpoint/challenge', 200, '', 'session_expired:'),
             ('https://www.linkedin.com/company/a/about/', 429, '', 'rate_limited:'),
             ('https://www.linkedin.com/company/a/about/', 200, 'Too many requests', 'rate_limited:'),
+            ('https://www.linkedin.com/company/a/about/', 403, 'Sorry, you have been blocked\nYou are unable to access linkedin.com', 'rate_limited:'),
             ('https://www.linkedin.com/company/a/about/', 404, '', 'not_found:'),
             ('https://www.linkedin.com/company/a/about/', 200, "This page doesn't exist", 'not_found:'),
         ]

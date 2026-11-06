@@ -22,6 +22,10 @@ def classify_page(url, status, text, expected_slug=None):
         raise ScrapeError('rate_limited: LinkedIn returned HTTP 429')
     if any(part in path for part in ('/login', '/checkpoint', '/authwall', '/uas/login')):
         raise ScrapeError('session_expired: LinkedIn requires sign-in or verification')
+    # Cloudflare's block page ("Sorry, you have been blocked"): the account is fine,
+    # the IP or browser was flagged. Treat it as rate limiting so the worker rests.
+    if 'you have been blocked' in text or 'attention required! | cloudflare' in text or (status == 403 and 'cloudflare' in text):
+        raise ScrapeError('rate_limited: LinkedIn (Cloudflare) blocked this connection')
     if any(s in text for s in ('too many requests', 'rate limit exceeded', 'you have reached the limit', 'slow down')):
         raise ScrapeError('rate_limited: LinkedIn is limiting requests')
     if status in (404, 410) or any(s in text for s in ("page doesn't exist", "page does not exist", "page isn't available", 'this page is unavailable', 'page not found')):
