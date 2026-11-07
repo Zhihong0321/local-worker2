@@ -3568,7 +3568,7 @@
       "file": null,
       "tier4": {
         "reason": "blocked",
-        "evidence": "HTTP GET to https://www.bursamalaysia.com/market_information/announcements/company_announcement returns HTTP 403 Forbidden with title 'Just a moment...', header 'cf-mitigated: challenge', server 'cloudflare', and script source 'https://challenges.cloudflare.com'."
+        "evidence": "Rechecked 2026-11-07 from a worker PC (residential line, pc-desktop-camhl16). Node fetch (what lookup handlers run in) still gets HTTP 403, title 'Just a moment...', header 'cf-mitigated: challenge', server 'cloudflare' at https://www.bursamalaysia.com/market_information/announcements/company_announcement. The challenge follows the client's TLS fingerprint, not the line: the worker's page reader (curl_cffi with Chrome's TLS, the reader behind /api/fetch) gets HTTP 200 and the real page, with no challenge shown. That page (title 'Company Announcements') is a JS shell: the reader gets the menu JSON, not the announcement list. A lookup handler cannot read it; read it with /api/fetch or /api/shot. The research's own verdict also stands: the list holds only listed companies (Bhd), not Sdn Bhd."
       },
       "browser_steps": null,
       "verified_at": null,
@@ -3942,7 +3942,7 @@
       "file": null,
       "tier4": {
         "reason": "blocked",
-        "evidence": "HTTP GET to https://e-merger.mia.org.my/FirmListing.asp returns HTTP 403 Forbidden with title 'Just a moment...', header 'cf-mitigated: challenge', server 'cloudflare', and script source 'https://challenges.cloudflare.com'."
+        "evidence": "Rechecked 2026-11-07 from a worker PC (residential line, pc-desktop-camhl16). Node fetch (what lookup handlers run in) still gets HTTP 403, title 'Just a moment...', header 'cf-mitigated: challenge', server 'cloudflare' at https://e-merger.mia.org.my/FirmListing.asp. The challenge follows the client's TLS fingerprint, not the line: the worker's page reader (curl_cffi with Chrome's TLS, the reader behind /api/fetch) gets HTTP 200 and the real page, with no challenge shown. The real page (title 'MIA Member Firms Directory') lists firms with their AF numbers ('Search Results : 25 record(s) found' with no query). A lookup handler cannot read it; read it with /api/fetch."
       },
       "browser_steps": null,
       "verified_at": null,
@@ -4470,7 +4470,7 @@
       "file": null,
       "tier4": {
         "reason": "down",
-        "evidence": "HTTP 503 on every URL of the host: https://www.lppeh.gov.my/ -> 301 to https://lppeh.gov.my/WP2016/ -> 503, 2244-byte page, <title>Scheduled Maintenance</title>; also 503 for /WP2016/, /WP2016/faq/, /WP2016/?s=valuation and /WP2016/wp-json/. Page text: \"Scheduled Maintenance - We are currently transitioning to a new domain. We apologise for any inconvenience caused. The updated LPEPH website is now accessible at http://lpeph.gov.my. The BIS portal is available at http://bis.lpeph.gov.my\". sitemap.xml still answers 200 but lists only the old WordPress pages (gallery, circulars, contact-us, faq, forms, fees ...) and no register or firm search. The successor domain has no public firm register (staff directory only) and its BIS portal sends every register route to /login."
+        "evidence": "Rechecked 2026-11-07 from a worker PC (residential line, pc-desktop-camhl16). https://www.lppeh.gov.my/ still 301s to https://lppeh.gov.my/WP2016/, which answers HTTP 503, title 'Scheduled Maintenance' (2,244 bytes), to Node fetch and to the worker's page reader alike. The successor portal is lpeph.gov.my (handler MY-lpeph.gov.my/w1)."
       },
       "browser_steps": null,
       "verified_at": null,
@@ -4866,7 +4866,7 @@
       "file": null,
       "tier4": {
         "reason": "blocked",
-        "evidence": "HTTP GET to mia.org.my returns HTTP 403 Forbidden with title 'Just a moment...', header 'Cf-Mitigated: challenge', and script source 'https://challenges.cloudflare.com'."
+        "evidence": "Rechecked 2026-11-07 from a worker PC (residential line, pc-desktop-camhl16). Node fetch (what lookup handlers run in) still gets HTTP 403, title 'Just a moment...', header 'cf-mitigated: challenge', server 'cloudflare' at https://mia.org.my/regulatory-public-interest/enforcement/disciplinary/. The challenge follows the client's TLS fingerprint, not the line: the worker's page reader (curl_cffi with Chrome's TLS, the reader behind /api/fetch) gets HTTP 200 and the real page, with no challenge shown. The page (title 'Disciplinary - Malaysian Institute of Accountants') is an explainer with links to statistics; it carries no firm numbers. A lookup handler cannot read mia.org.my; read it with /api/fetch."
       },
       "browser_steps": null,
       "verified_at": null,
@@ -4888,7 +4888,7 @@
       "file": null,
       "tier4": {
         "reason": "blocked",
-        "evidence": "HTTP GET to https://mia.org.my/regulatory-public-interest/enforcement/disciplinary/ returns HTTP 403 with title 'Just a moment...', header 'Cf-Mitigated: challenge', and Turnstile challenge from challenges.cloudflare.com."
+        "evidence": "Rechecked 2026-11-07 from a worker PC (residential line, pc-desktop-camhl16). Node fetch (what lookup handlers run in) still gets HTTP 403, title 'Just a moment...', header 'cf-mitigated: challenge', server 'cloudflare' at https://mia.org.my/regulatory-public-interest/enforcement/disciplinary/. The challenge follows the client's TLS fingerprint, not the line: the worker's page reader (curl_cffi with Chrome's TLS, the reader behind /api/fetch) gets HTTP 200 and the real page, with no challenge shown. The page explains the Disciplinary Committee and links to statistics and the Disciplinary Appeal page; read it and those pages with /api/fetch. A lookup handler cannot read mia.org.my."
       },
       "browser_steps": null,
       "verified_at": null,
@@ -4909,8 +4909,8 @@
       "canary": null,
       "file": null,
       "tier4": {
-        "reason": "blocked",
-        "evidence": "HTTP GET to https://mia.org.my/members-firm-search/ returns HTTP 403 Forbidden with title 'Just a moment...', header 'cf-mitigated: challenge', server 'cloudflare', and challenge script from 'https://challenges.cloudflare.com'."
+        "reason": "no_data",
+        "evidence": "Rechecked 2026-11-07 from a worker PC (residential line, pc-desktop-camhl16). Node fetch (what lookup handlers run in) still gets HTTP 403, title 'Just a moment...', header 'cf-mitigated: challenge', server 'cloudflare' at https://mia.org.my/members-firm-search/. The challenge follows the client's TLS fingerprint, not the line: the worker's page reader (curl_cffi with Chrome's TLS, the reader behind /api/fetch) gets HTTP 200 and the real page, with no challenge shown. The real page (title 'Members/Firm Search - Malaysian Institute of Accountants', about 2,400 characters of text) has no search form: it only links to the member portal's login (member.mia.org.my), which is out of scope."
       },
       "browser_steps": null,
       "verified_at": null,
@@ -5526,7 +5526,7 @@
       "file": null,
       "tier4": {
         "reason": "down",
-        "evidence": "Node public GET fails CERT_HAS_EXPIRED. Diagnostic curl with certificate validation disabled reaches HTTP 500 Internal Server Error, IIS Runtime Error, Server Error in / Application, An application error occurred on the server. No search form or data reachable."
+        "evidence": "Rechecked 2026-11-07 from a worker PC (residential line, pc-desktop-camhl16). https://search.lppeh.gov.my/ still fails TLS: 'certificate has expired' (Node fetch) and curl error 60 'certificate has expired' (the worker's page reader). Use MY-lpeph.gov.my/w1."
       },
       "browser_steps": null,
       "verified_at": null,
