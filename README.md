@@ -212,6 +212,14 @@ model is set up, `409` before the audit is done. The scores never come from the 
   Until that works (retried hourly) it takes scans only. Each hop of a fetch,
   redirects included, must resolve to a public address, so a caller cannot
   reach the PC's LAN. `WEB_FETCH=off` in `worker.env` keeps a PC to scans.
+- **Screenshots.** `web.shot` runs `worker/shot.mjs` on the worker's portable
+  Node and drives the browser the PC already has over the DevTools protocol:
+  Microsoft Edge on Windows, Google Chrome on a Mac (`SHOT_BROWSER` names
+  another), headless on a throwaway profile. Nothing is downloaded. A worker
+  without that browser, or with `WEB_SHOT=off`, does not poll `web.shot`. Every
+  request the page makes must go to a public address. A Cloudflare challenge or
+  another bot check is reported as `blocked` and never answered: the shot stops
+  at the challenge page and sends no image.
 - **Pace.** 500 ms between Google requests (`GMAP_PACE_MS` in `worker.env`),
   up to 15 pages of 20 per search. Measured 2026-10-29: factory sweep of Taman
   Daya, 818 businesses in 2.7 min from 128 requests.

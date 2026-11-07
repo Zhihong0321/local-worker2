@@ -48,9 +48,9 @@
 <main>
 
 <h1>Local Gmap Worker API</h1>
-<p class="lead">Google Maps business scans, web page reads, and SEO and GEO website audits as an API. Jobs run on Windows worker PCs and are posted back here.</p>
+<p class="lead">Google Maps business scans, web page reads, page screenshots, and SEO and GEO website audits as an API. Jobs run on Windows worker PCs and are posted back here.</p>
 <nav>
-  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#fetch">Fetch a page</a><a href="#audit">Site audit</a><a href="#measures">What it measures</a><a href="#advice">AI advice</a><a href="#lookup">Site lookup</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
+  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#fetch">Fetch a page</a><a href="#shot">Screenshot</a><a href="#audit">Site audit</a><a href="#measures">What it measures</a><a href="#advice">AI advice</a><a href="#lookup">Site lookup</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
 </nav>
 
 <h2 id="base">Base URL</h2>
@@ -112,6 +112,46 @@
 <p><code>headers</code> are the final response's, names in lower case; a repeated header is joined with <code>", "</code> (<code>set-cookie</code> with a newline). <code>redirects</code> has one entry per hop, in order, with <code>location</code> made absolute; it is empty when the page did not redirect.</p>
 <p><strong>PDFs</strong> come back as markdown, tables as markdown tables (<code>format: "text"</code> gives plain text). A PDF reads at about 0.4 s a page: past the fetch's deadline it returns the pages it has with <code>truncated: true</code>, so send a larger <code>timeoutMs</code> for very long ones. Limits: 30 MB and 300 pages. Scanned PDFs without a text layer come back nearly empty.</p>
 <p>Without <code>keepErrors</code>, a site answering HTTP 400 or above fails the job (<code>"the site answered HTTP 404"</code>). With it, an error page comes back as markdown, text or HTML like any page, as its text if it is another type, and as an empty <code>content</code> if it has no body. Another kind of file (image, Word) or a refused address fails the job with an <code>error</code>. Plain text and JSON come back as they are. Pages are read without a browser, so content drawn only by JavaScript is not there.</p>
+
+<h2 id="shot">Screenshot a page</h2>
+<p><span class="ep">POST</span><span class="path">/api/shot</span></p>
+<p>Opens one page in a headless browser on a worker PC and returns a JPEG of what a visitor sees: a proof screenshot, with an optional text outlined in red. Windows workers use the Microsoft Edge Windows already has, Mac workers Google Chrome; nothing is downloaded. Only workers with that browser take shots (job type <code>web.shot</code>, opt-in like <code>site.audit</code>). The call answers with the shot by default.</p>
+<pre><code>curl -X POST https://YOUR-SERVICE/api/shot \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/contact","device":"mobile","find":"Call us"}'</code></pre>
+<table>
+  <tr><th>Field</th><th>Meaning</th></tr>
+  <tr><td><code>url</code></td><td>The page, http or https. Required. Workers refuse private and local addresses, for the page, its redirects and everything the page loads.</td></tr>
+  <tr><td><code>device</code></td><td><code>desktop</code> (default): 1280 &times; 760, scale 1. <code>mobile</code>: 390 &times; 780, scale 2, touch, a phone's user agent.</td></tr>
+  <tr><td><code>find</code></td><td>Optional text, up to 500 characters. The first <strong>visible</strong> element whose text contains it (case and runs of spaces ignored, first 60 characters) gets a 4px <code>#e11d48</code> outline offset 4px and a <code>rgba(225,29,72,0.10)</code> background, and is scrolled to the centre of the screen.</td></tr>
+  <tr><td><code>waitMs</code></td><td>Wait after the page's <code>load</code> event before the shot. 0 to 30000, default 1500.</td></tr>
+  <tr><td><code>quality</code></td><td>JPEG quality, 1 to 100. Default 72.</td></tr>
+  <tr><td><code>wait</code></td><td>Seconds to hold the request. Default: the shot's timeout plus 30 s. <code>0</code> returns <code>202</code> with the job at once.</td></tr>
+  <tr><td><code>timeoutMs</code></td><td>10000 to 300000. Default 60000. A shot no worker claims within this fails.</td></tr>
+  <tr><td><code>worker</code></td><td>Pin the shot to one worker by name.</td></tr>
+</table>
+<p>The job's <code>result</code>:</p>
+<pre><code>{ "url": "...", "finalUrl": "...", "status": 200, "device": "mobile",
+  "title": "...",
+  "found": true,            // false: the text was not visible; the shot is the top of the page
+  "blocked": false,         // true: the page was a bot check; no image, evidence in "detail"
+  "detail": null,
+  "image": "&lt;base64 JPEG&gt;",  // the viewport; a mobile shot is 780 x 1560 pixels (scale 2)
+  "width": 390, "height": 780,
+  "loaded": true,           // false: the load event never came; the shot is what had drawn
+  "redirects": [ { "url": "...", "status": 301, "location": "..." } ],
+  "documents": [ { "url": "...", "status": 200 } ],  // every page the tab was sent, in order
+  "worker": "pc-...", "tookMs": 4200 }</code></pre>
+<ul>
+  <li><strong>Error pages are shot.</strong> A page that answers 4xx or 5xx comes back with its <code>status</code> and an image: the error page is the proof.</li>
+  <li><strong>Bot checks are never answered.</strong> A Cloudflare challenge (<code>cf-mitigated</code> header, "Just a moment..."), Turnstile, reCAPTCHA or hCaptcha on a page with little else, Imperva, DataDome, PerimeterX, Akamai or Google's "unusual traffic" page gives <code>blocked: true</code>, no image, and the evidence:
+<pre><code>"detail": { "evidence": ["header cf-mitigated: challenge", "title "Just a moment...""],
+  "title": "Just a moment...", "url": "...", "status": 403, "server": "cloudflare", "text": "..." }</code></pre>
+  The browser stops at the challenge page; it is never left to run and clear itself.</li>
+  <li><strong>Failures.</strong> A page that does not load at all (DNS, refused, TLS), a private address, or a browser that will not start fails the job with an <code>error</code>. With no <code>web.shot</code> worker online, the job fails at <code>timeoutMs</code>.</li>
+  <li>The hub keeps the last 100 finished shots; fetch the image when the job finishes.</li>
+</ul>
 
 <h2 id="audit">Audit a website</h2>
 <p><span class="ep">POST</span><span class="path">/api/audit</span></p>
@@ -275,12 +315,12 @@
 
 <h2 id="get">Get, cancel and list jobs</h2>
 <h3><span class="ep">GET</span><span class="path">/api/scan/{id}?wait=60</span></h3>
-<p><code>/api/jobs/{id}</code>, <code>/api/fetch/{id}</code>, <code>/api/audit/{id}</code> and <code>/api/lookup/{id}</code> also retrieve jobs.</p>
+<p><code>/api/jobs/{id}</code>, <code>/api/fetch/{id}</code>, <code>/api/shot/{id}</code>, <code>/api/audit/{id}</code> and <code>/api/lookup/{id}</code> also retrieve jobs.</p>
 <p>Returns the job. <code>wait</code> holds the request until it finishes, up to 900 seconds. <code>404</code> for an unknown id.</p>
 <h3><span class="ep">DELETE</span><span class="path">/api/scan/{id}</span></h3>
-<p>Cancels the job. <code>/api/jobs/{id}</code>, <code>/api/fetch/{id}</code>, <code>/api/audit/{id}</code> and <code>/api/lookup/{id}</code> also accept DELETE. <code>409</code> if it has already finished.</p>
+<p>Cancels the job. <code>/api/jobs/{id}</code>, <code>/api/fetch/{id}</code>, <code>/api/shot/{id}</code>, <code>/api/audit/{id}</code> and <code>/api/lookup/{id}</code> also accept DELETE. <code>409</code> if it has already finished.</p>
 <h3><span class="ep">GET</span><span class="path">/api/scans?status=running</span></h3>
-<p>Recent jobs, up to 200, without results. <code>status</code> is optional: <code>pending</code>, <code>running</code>, <code>done</code> or <code>failed</code>. <code>type</code> is optional: <code>gmap.scan</code>, <code>web.fetch</code>, <code>site.audit</code> or <code>site.lookup</code>.</p>
+<p>Recent jobs, up to 200, without results. <code>status</code> is optional: <code>pending</code>, <code>running</code>, <code>done</code> or <code>failed</code>. <code>type</code> is optional: <code>gmap.scan</code>, <code>web.fetch</code>, <code>web.shot</code>, <code>site.audit</code> or <code>site.lookup</code>.</p>
 
 <h2 id="other">Other routes</h2>
 <table>
@@ -294,7 +334,7 @@
 <h2 id="job">Job object</h2>
 <pre><code>{
   "id": "857ccca76cfe",
-  "type": "gmap.scan",       // gmap.scan | web.fetch | site.audit | site.lookup
+  "type": "gmap.scan",       // gmap.scan | web.fetch | web.shot | site.audit | site.lookup
   "status": "done",          // pending | running | done | failed
   "worker": "pc-desktop-camhl16",
   "attempts": 1,
@@ -320,7 +360,7 @@
 
 <h2 id="behaviour">Behaviour</h2>
 <ul>
-  <li><strong>No worker free.</strong> A job waits in the queue. A scan fails after 30 minutes with no worker, a fetch or audit after its <code>timeoutMs</code>.</li>
+  <li><strong>No worker free.</strong> A job waits in the queue. A scan fails after 30 minutes with no worker, a fetch, shot, audit or lookup after its <code>timeoutMs</code>.</li>
   <li><strong>Lost worker.</strong> A job whose worker stops responding goes back to the queue. After 3 lost workers it fails.</li>
   <li><strong>Google refusal.</strong> The worker posts what it has and rests for 30 minutes. The service sends it no scans meanwhile; it still takes fetches.</li>
   <li><strong>Restart.</strong> The queue is held in memory. A redeploy drops pending jobs. A job already running is re-filed when its worker posts the result.</li>

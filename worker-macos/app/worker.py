@@ -22,6 +22,11 @@
 # the keyword's family, then for a Business scan "shop/company in <street>" for
 # the streets the first pass found. The words come from the service on every job.
 #
+# web.shot jobs (shot.mjs, on the portable Node the lookups use) take a proof
+# screenshot of one page with the Google Chrome this Mac already has, headless
+# on a throwaway profile. Nothing is downloaded for it; a Mac without Chrome
+# does not take shots.
+#
 # It also takes web.fetch jobs (fetch.py) and site.audit jobs (audit.py), each
 # in a process of its own, with packages this installs into its own Python on
 # first start. Scans work without them. Those scripts
@@ -163,6 +168,10 @@ Name = Cfg.get('WORKER_NAME') or default_name()
 PaceMs = max(0, int(Cfg['GMAP_PACE_MS'])) if Cfg.get('GMAP_PACE_MS') else 500
 # WEB_FETCH=off keeps this Mac to Maps scans.
 FetchOn = Cfg.get('WEB_FETCH', '').lower() != 'off'
+# WEB_SHOT=off keeps this Mac from taking screenshots; SHOT_BROWSER names another
+# Chromium browser (Edge) instead of Chrome.
+ShotOn = Cfg.get('WEB_SHOT', '').lower() != 'off'
+ShotBrowser = Cfg.get('SHOT_BROWSER', '')
 Types = 'gmap.scan'
 # Time kept back from the job's deadline to post the result.
 PostMarginSec = 60
@@ -717,6 +726,48 @@ def invoke_audit(job):
         file.unlink(missing_ok=True)
 
 
+# --------------------------------------------------------------- screenshots
+
+ShotExe = None
+
+
+# The browser web.shot drives: SHOT_BROWSER, else the Chrome macOS installs.
+def find_shot_browser():
+    if not ShotOn:
+        return None
+    candidates = [
+        ShotBrowser,
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        str(Path.home() / 'Applications' / 'Google Chrome.app' / 'Contents' / 'MacOS' / 'Google Chrome'),
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    return None
+
+
+# One web.shot job, by shot.mjs on the portable Node, with the payload in a file.
+def invoke_shot(job):
+    p = job.get('payload') or {}
+    file = DATA / f"shot-{job['id']}.json"
+    spec = {'url': p.get('url'), 'device': p.get('device'), 'find': p.get('find'), 'waitMs': p.get('waitMs'), 'quality': p.get('quality'),
+            'timeoutMs': to_int(job.get('timeoutMs')), 'browser': ShotExe}
+    write_text(file, json.dumps(spec, separators=(',', ':')))
+    try:
+        timeout_ms = to_int(job.get('timeoutMs'))
+        line, err = run_job_script([str(NodeExe), str(SHARED / 'shot.mjs'), str(file)], timeout_ms + 10000,
+                                   timeout_message=f'the screenshot took longer than {timeout_ms // 1000} s')
+        if not line:
+            raise RuntimeError(f'shot.mjs answered nothing: {err}')
+        r = json.loads(line)
+        if not r.get('ok'):
+            raise RuntimeError(str(r.get('error')))
+        r['result']['worker'] = Name
+        return r['result']
+    finally:
+        file.unlink(missing_ok=True)
+
+
 # -------------------------------------------------------------- site lookup
 
 # Pinned from nodejs.org/dist/index.json and this release's SHASUMS256.txt.
@@ -892,9 +943,14 @@ def send_unsaved():
 
 def main():
     global FetchReady, NextSetup, PdfReady, NextPdfSetup
-    global Types, JobId, LastBeat
+    global Types, JobId, LastBeat, ShotExe
     log(f"Local Gmap Worker '{Name}' -> {Lab} (Google Maps list pages, {PaceMs} ms apart; web pages {'on' if FetchOn else 'off'})")
     remove_linkedin_leftovers()
+    ShotExe = find_shot_browser()
+    if ShotExe:
+        log(f'screenshots: {ShotExe}')
+    elif ShotOn:
+        log('screenshots are off: no Google Chrome on this Mac (SHOT_BROWSER in worker.env names another browser)')
     backoff = 5
     # While Google rests this line, keep taking the other ready job types.
     rest_until = time.time()
@@ -914,6 +970,7 @@ def main():
                 'web.fetch' if FetchReady else None,
                 'site.audit' if FetchReady else None,
                 'site.lookup' if NodeReady else None,
+                'web.shot' if NodeReady and ShotExe else None,
             ) if t)
             if not Types:
                 time.sleep(min(25, max(1, int(rest_until - time.time()))))
@@ -955,6 +1012,18 @@ def main():
                 except Exception as e:
                     log(f"job {job['id']} failed: {e}")
                     send_result(job['id'], job.get('payload'), False, None, str(e), 0, 'site.audit')
+                finally:
+                    JobId = None
+                continue
+            if job.get('type') == 'web.shot':
+                log(f"job {job['id']}: shot {payload.get('url')} ({payload.get('device')})")
+                try:
+                    result = invoke_shot(job)
+                    log(f"job {job['id']}: HTTP {result.get('status')}, {'a bot check, no image' if result.get('blocked') else 'found ' + str(result.get('found'))} in {result.get('tookMs')} ms")
+                    send_result(job['id'], job.get('payload'), True, result, '', 0, 'web.shot')
+                except Exception as e:
+                    log(f"job {job['id']} failed: {e}")
+                    send_result(job['id'], job.get('payload'), False, None, str(e), 0, 'web.shot')
                 finally:
                     JobId = None
                 continue

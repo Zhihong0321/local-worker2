@@ -27,7 +27,8 @@ const SCAN = 'gmap.scan';
 const FETCH = 'web.fetch';
 const AUDIT = 'site.audit';
 const LOOKUP = 'site.lookup';
-const JOB_TYPES = [SCAN, FETCH, AUDIT, LOOKUP];
+const SHOT = 'web.shot';
+const JOB_TYPES = [SCAN, FETCH, AUDIT, LOOKUP, SHOT];
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 const MIN_TIMEOUT_MS = 120_000;
@@ -40,6 +41,12 @@ const FETCH_MIN_TIMEOUT_MS = 10_000;
 const FETCH_MAX_TIMEOUT_MS = 300_000;
 const FETCH_LEASE_GRACE_MS = 30_000;
 const FETCH_FORMATS = ['markdown', 'text', 'html'];
+/** A shot is one page in a browser: the same timeouts as a fetch. */
+const SHOT_DEFAULT_TIMEOUT_MS = 60_000;
+const SHOT_LEASE_GRACE_MS = 30_000;
+const SHOT_DEVICES = ['desktop', 'mobile'];
+/** Each shot result carries a JPEG; only this many finished shots are kept, so memory stays small. */
+const KEEP_SHOTS = 100;
 const AUDIT_DEFAULT_TIMEOUT_MS = 180_000;
 const AUDIT_MIN_TIMEOUT_MS = 30_000;
 const AUDIT_MAX_TIMEOUT_MS = 600_000;
@@ -270,6 +277,8 @@ function finishJob(job, ok, result, error) {
 function evict() {
   const finished = [...jobs.values()].filter((j) => j.status === 'done' || j.status === 'failed');
   for (const j of finished.slice(0, Math.max(0, finished.length - KEEP_FINISHED))) jobs.delete(j.id);
+  const shots = finished.filter((j) => j.type === SHOT && jobs.has(j.id));
+  for (const j of shots.slice(0, Math.max(0, shots.length - KEEP_SHOTS))) jobs.delete(j.id);
 }
 
 function claimable(job, worker, types) {
@@ -283,7 +292,7 @@ function lease(job, worker) {
   job.worker = worker;
   job.attempts++;
   job.startedAt = now();
-  job.leaseUntil = Date.now() + job.timeoutMs + (job.type === FETCH ? FETCH_LEASE_GRACE_MS : job.type === AUDIT ? AUDIT_LEASE_GRACE_MS : job.type === LOOKUP ? LOOKUP_LEASE_GRACE_MS : LEASE_GRACE_MS);
+  job.leaseUntil = Date.now() + job.timeoutMs + (job.type === FETCH ? FETCH_LEASE_GRACE_MS : job.type === SHOT ? SHOT_LEASE_GRACE_MS : job.type === AUDIT ? AUDIT_LEASE_GRACE_MS : job.type === LOOKUP ? LOOKUP_LEASE_GRACE_MS : LEASE_GRACE_MS);
   return job;
 }
 
@@ -307,7 +316,7 @@ function wakeHost(host) {
 /** Fetch, audit and lookup callers usually hold the line; canaries can wait their turn. */
 function queueTimeout(job) {
   if (job.type === LOOKUP) return job.check ? LOOKUP_CHECK_QUEUE_TIMEOUT_MS : job.timeoutMs;
-  return job.type === FETCH || job.type === AUDIT ? job.timeoutMs : QUEUE_TIMEOUT_MS;
+  return job.type === FETCH || job.type === SHOT || job.type === AUDIT ? job.timeoutMs : QUEUE_TIMEOUT_MS;
 }
 
 /** Expired leases go back to the queue; jobs nobody takes or that keep dying fail. */
@@ -319,7 +328,7 @@ function sweep() {
       job.status = 'pending'; job.worker = null; job.leaseUntil = null;
       if (job.type === LOOKUP) wakeHost(job.payload.host); else wake(job);
     } else if (job.status === 'pending' && t - Date.parse(job.createdAt) > queueTimeout(job)) {
-      const within = job.type === FETCH || job.type === AUDIT || job.type === LOOKUP ? `${Math.round(queueTimeout(job) / 1000)} s` : `${Math.round(QUEUE_TIMEOUT_MS / 60000)} min`;
+      const within = job.type === FETCH || job.type === SHOT || job.type === AUDIT || job.type === LOOKUP ? `${Math.round(queueTimeout(job) / 1000)} s` : `${Math.round(QUEUE_TIMEOUT_MS / 60000)} min`;
       finishJob(job, false, null, job.payload.worker
         ? `worker ${job.payload.worker} did not claim it within ${within}`
         : `no worker claimed it within ${within}`);
@@ -367,6 +376,33 @@ function readFetch(body) {
   // Opt-in, and only set when asked: a fetch without them is the same job it always was.
   if (body.keepErrors === true) payload.keepErrors = true;
   if (body.headers === true) payload.headers = true;
+  if (str(body.worker).trim()) payload.worker = str(body.worker).trim();
+  return { payload, timeoutMs };
+}
+
+function readShot(body) {
+  const raw = str(body.url).trim();
+  if (!raw) return { error: 'url is required' };
+  if (raw.length > 2048) return { error: 'url is at most 2048 characters' };
+  let url;
+  try { url = new URL(raw); } catch { return { error: 'url is not a URL' }; }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return { error: 'url must be http or https' };
+  const device = body.device == null ? 'desktop' : str(body.device);
+  if (!SHOT_DEVICES.includes(device)) return { error: `device is ${SHOT_DEVICES.join(' or ')}` };
+  if (body.find != null && typeof body.find !== 'string') return { error: 'find is a string' };
+  const find = str(body.find).trim();
+  if (find.length > 500) return { error: 'find is at most 500 characters' };
+  const waitMs = body.waitMs == null ? 1500 : Number(body.waitMs);
+  if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > 30_000) return { error: 'waitMs is a whole number from 0 to 30000' };
+  const quality = body.quality == null ? 72 : Number(body.quality);
+  if (!Number.isInteger(quality) || quality < 1 || quality > 100) return { error: 'quality is a whole number from 1 to 100' };
+  const timeoutMs = body.timeoutMs == null ? SHOT_DEFAULT_TIMEOUT_MS : Number(body.timeoutMs);
+  if (!Number.isFinite(timeoutMs) || timeoutMs < FETCH_MIN_TIMEOUT_MS || timeoutMs > FETCH_MAX_TIMEOUT_MS) {
+    return { error: `timeoutMs is from ${FETCH_MIN_TIMEOUT_MS} to ${FETCH_MAX_TIMEOUT_MS}` };
+  }
+  // As with a fetch, the worker refuses private and local addresses itself.
+  const payload = { url: url.href, device, waitMs, quality };
+  if (find) payload.find = find;
   if (str(body.worker).trim()) payload.worker = str(body.worker).trim();
   return { payload, timeoutMs };
 }
@@ -573,7 +609,7 @@ async function route(req, res) {
       if (!body.payload || typeof body.payload !== 'object') { json(res, 404, { error: 'no such job' }); return; }
       // Not create(): a waiting worker must not be handed a job this one is about to finish.
       const type = JOB_TYPES.includes(body.type) ? body.type : SCAN;
-      job = add({ ...body.payload }, type === FETCH ? FETCH_DEFAULT_TIMEOUT_MS : type === AUDIT ? AUDIT_DEFAULT_TIMEOUT_MS : type === LOOKUP ? LOOKUP_DEFAULT_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, id, type);
+      job = add({ ...body.payload }, type === FETCH ? FETCH_DEFAULT_TIMEOUT_MS : type === SHOT ? SHOT_DEFAULT_TIMEOUT_MS : type === AUDIT ? AUDIT_DEFAULT_TIMEOUT_MS : type === LOOKUP ? LOOKUP_DEFAULT_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, id, type);
       lease(job, worker);
     }
     if (job.status === 'done' || job.status === 'failed') { json(res, 409, { error: `job is already ${job.status}` }); return; }
@@ -658,6 +694,20 @@ async function route(req, res) {
     return;
   }
 
+  if (method === 'POST' && p === '/api/shot') {
+    const body = await readJson(req);
+    const shot = readShot(body);
+    if (shot.error) { json(res, 400, { error: shot.error }); return; }
+    const job = create(shot.payload, shot.timeoutMs, SHOT);
+    // Like a fetch: answers in the same call unless the caller says otherwise; wait 0 returns the id at once.
+    const waitSec = Number(body.wait ?? q.get('wait') ?? NaN);
+    const waitMs = Number.isFinite(waitSec) ? waitSec * 1000 : shot.timeoutMs + SHOT_LEASE_GRACE_MS;
+    const waited = await waitFor(job, Math.min(MAX_CALLER_WAIT_MS, waitMs), res);
+    if (res.destroyed) return;
+    json(res, waited.status === 'done' || waited.status === 'failed' ? 200 : 202, { job: view(waited) });
+    return;
+  }
+
   if (method === 'POST' && p === '/api/audit') {
     const body = await readJson(req);
     const audit = readAudit(body);
@@ -697,7 +747,7 @@ async function route(req, res) {
     return;
   }
 
-  const jobId = /^\/api\/(?:jobs|scan|fetch|audit|lookup)\/([a-f0-9]{12})$/.exec(p);
+  const jobId = /^\/api\/(?:jobs|scan|fetch|shot|audit|lookup)\/([a-f0-9]{12})$/.exec(p);
   if (jobId && method === 'GET') {
     const job = jobs.get(jobId[1]);
     if (!job) { json(res, 404, { error: 'no such job' }); return; }
@@ -720,7 +770,7 @@ async function route(req, res) {
     const status = str(q.get('status'));
     const type = str(q.get('type'));
     const list = [...jobs.values()].filter((j) => (!status || j.status === status) && (!type || j.type === type)).reverse().slice(0, 200)
-      .map(({ result, ...j }) => ({ ...view(j), found: result?.found ?? null }));
+      .map(({ result, ...j }) => ({ ...view(j), found: result?.found ?? null, ...(j.type === SHOT ? { blocked: result?.blocked ?? null } : {}) }));
     json(res, 200, { jobs: list });
     return;
   }

@@ -21,6 +21,7 @@ const FILES = [
   ['audit_onpage.py', 'app/audit_onpage.py'],
   ['audit_schema.py', 'app/audit_schema.py'],
   ['run-handler.mjs', 'app/run-handler.mjs'],
+  ['shot.mjs', 'app/shot.mjs'],
 ];
 
 const DOS_EPOCH = { time: 0, date: (2026 - 1980) << 9 | 1 << 5 | 1 };
@@ -87,6 +88,7 @@ export function packageZip(hubUrl, workerKey, dir = DIR) {
     '# WORKER_NAME=pc-office-1',
     '# GMAP_PACE_MS=500',
     '# WEB_FETCH=off',
+    '# WEB_SHOT=off',
     '',
   ].join('\n');
   const entries = FILES.map(([from, to]) => ({ name: 'LocalGmapWorker/' + to, data: forWindows(to, fs.readFileSync(path.join(dir, from))) }));

@@ -24,6 +24,11 @@
 # The same Python runs site.audit jobs (audit.py): an SEO and GEO benchmark of
 # one website, a few dozen polite requests to that site.
 #
+# web.shot jobs (shot.mjs, on the portable Node the lookups use) take a proof
+# screenshot of one page with the Microsoft Edge Windows already has, headless
+# on a throwaway profile. Nothing is downloaded for it; a PC without Edge does
+# not take shots.
+#
 # Windows PowerShell 5.1, ASCII only (5.1 reads a BOM-less script as ANSI).
 param([ValidateSet('on', 'off', '')][string]$Autostart = '')
 
@@ -99,6 +104,10 @@ $PaceMs = 500
 if ($Cfg['GMAP_PACE_MS']) { $PaceMs = [Math]::Max(0, [int]$Cfg['GMAP_PACE_MS']) }
 # WEB_FETCH=off keeps this PC to Maps scans.
 $FetchOn = ([string]$Cfg['WEB_FETCH']).ToLower() -ne 'off'
+# WEB_SHOT=off keeps this PC from taking screenshots; SHOT_BROWSER names another
+# Chromium browser (Chrome) instead of Edge.
+$ShotOn = ([string]$Cfg['WEB_SHOT']).ToLower() -ne 'off'
+$ShotBrowser = [string]$Cfg['SHOT_BROWSER']
 $script:Types = 'gmap.scan'
 # Time kept back from the job's deadline to post the result.
 $PostMarginSec = 60
@@ -609,6 +618,58 @@ function Invoke-Audit($Job) {
   } finally { Remove-Item $file -Force -ErrorAction SilentlyContinue }
 }
 
+# --------------------------------------------------------------- screenshots
+
+# The browser web.shot drives: SHOT_BROWSER, else the Edge Windows installs.
+function Find-ShotBrowser {
+  if (-not $ShotOn) { return $null }
+  $candidates = @(
+    $ShotBrowser
+    (Join-Path ([string]${env:ProgramFiles(x86)}) 'Microsoft\Edge\Application\msedge.exe')
+    (Join-Path ([string]$env:ProgramFiles) 'Microsoft\Edge\Application\msedge.exe')
+    (Join-Path ([string]$env:LOCALAPPDATA) 'Microsoft\Edge\Application\msedge.exe')
+  )
+  foreach ($c in $candidates) { if ($c -and (Test-Path -LiteralPath $c -PathType Leaf)) { return $c } }
+  return $null
+}
+
+# One web.shot job, by shot.mjs on the portable Node, with the payload in a file.
+function Invoke-Shot($Job) {
+  $p = $Job.payload
+  $file = Join-Path $Data "shot-$($Job.id).json"
+  $spec = @{ url = $p.url; device = $p.device; find = $p.find; waitMs = $p.waitMs; quality = $p.quality; timeoutMs = [int]$Job.timeoutMs; browser = $script:ShotExe }
+  [IO.File]::WriteAllText($file, ($spec | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
+  $proc = $null
+  try {
+    $psi = New-Object Diagnostics.ProcessStartInfo $NodeExe
+    $psi.Arguments = (@((Join-Path $PSScriptRoot 'shot.mjs'), $file) | ForEach-Object { Quote-NodeArgument $_ }) -join ' '
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $proc = [Diagnostics.Process]::Start($psi)
+    # Both streams at once: a full stderr pipe would stall the child.
+    $out = $proc.StandardOutput.ReadToEndAsync()
+    $err = $proc.StandardError.ReadToEndAsync()
+    if (-not $proc.WaitForExit([int]$Job.timeoutMs + 10000)) {
+      try { $proc.Kill() } catch { }
+      throw "the screenshot took longer than $([int]($Job.timeoutMs / 1000)) s"
+    }
+    $proc.WaitForExit()
+    # The answer is the last line.
+    $line = @($out.Result.Trim() -split "`r?`n")[-1]
+    if (-not $line) { throw "shot.mjs answered nothing: $($err.Result.Trim())" }
+    $r = $line | ConvertFrom-Json
+    if (-not $r.ok) { throw [string]$r.error }
+    $r.result | Add-Member worker $Name
+    return $r.result
+  } finally {
+    if ($proc) { $proc.Dispose() }
+    Remove-Item $file -Force -ErrorAction SilentlyContinue
+  }
+}
+
 # -------------------------------------------------------------- site lookup
 
 # Pinned from nodejs.org/dist/index.json and this release's SHASUMS256.txt.
@@ -793,6 +854,8 @@ function Send-Unsaved {
 
 Log "Local Gmap Worker '$Name' -> $Lab (Google Maps list pages, $PaceMs ms apart; web pages $(if ($FetchOn) { 'on' } else { 'off' }))"
 Remove-LinkedInLeftovers
+$script:ShotExe = Find-ShotBrowser
+if ($script:ShotExe) { Log "screenshots: $($script:ShotExe)" } elseif ($ShotOn) { Log 'screenshots are off: no Microsoft Edge on this PC (SHOT_BROWSER in worker.env names another browser)' }
 $backoff = 5
 # While Google rests this line, keep taking the other ready job types.
 $restUntil = Get-Date
@@ -815,6 +878,7 @@ while ($true) {
       if ($script:FetchReady) { 'web.fetch' }
       if ($script:FetchReady) { 'site.audit' }
       if ($script:NodeReady) { 'site.lookup' }
+      if ($script:NodeReady -and $script:ShotExe) { 'web.shot' }
     )) -join ','
     if (-not $script:Types) { Start-Sleep -Seconds ([Math]::Min(25, [Math]::Max(1, [int]($restUntil - (Get-Date)).TotalSeconds))); continue }
     $r = Invoke-Hub 'GET' ("/api/jobs/next?worker=$([uri]::EscapeDataString($Name))&types=$($script:Types)&wait=25") $null 45
@@ -853,6 +917,18 @@ while ($true) {
       } catch {
         Log "job $($job.id) failed: $($_.Exception.Message)"
         Send-Result $job.id $job.payload $false $null ([string]$_.Exception.Message) 0 'site.audit'
+      } finally { $script:JobId = $null }
+      continue
+    }
+    if ($job.type -eq 'web.shot') {
+      Log "job $($job.id): shot $($job.payload.url) ($($job.payload.device))"
+      try {
+        $result = Invoke-Shot $job
+        Log "job $($job.id): HTTP $($result.status), $(if ($result.blocked) { 'a bot check, no image' } else { "found $($result.found)" }) in $($result.tookMs) ms"
+        Send-Result $job.id $job.payload $true $result '' 0 'web.shot'
+      } catch {
+        Log "job $($job.id) failed: $($_.Exception.Message)"
+        Send-Result $job.id $job.payload $false $null ([string]$_.Exception.Message) 0 'web.shot'
       } finally { $script:JobId = $null }
       continue
     }

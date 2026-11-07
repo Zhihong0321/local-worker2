@@ -37,6 +37,10 @@ HOW IT WORKS
   minutes, and the service gives its jobs to other workers meanwhile. It keeps
   the PC awake only while a job runs. It still reads web pages while resting.
 
+  A screenshot job opens one page in Microsoft Edge, headless (no window),
+  on a throwaway profile, and sends back a picture of it. A page that shows a
+  bot check (a CAPTCHA or "Just a moment...") is reported, never answered.
+
   A web page job is one page, no browser. The worker refuses links to this
   PC's own network (router, other PCs, localhost).
 
@@ -46,6 +50,9 @@ SETTINGS (worker.env)
   WORKER_NAME        optional; default pc-<computer name>
   GMAP_PACE_MS       optional; pause between Google requests, default 500
   WEB_FETCH          optional; off = Maps jobs only, no web pages
+  WEB_SHOT           optional; off = no screenshots
+  SHOT_BROWSER       optional; another Chromium browser for screenshots
+                     (default: Microsoft Edge, which Windows already has)
 
 FILES ON THIS PC
   %LOCALAPPDATA%\LocalGmapWorker\worker.log   what the worker did

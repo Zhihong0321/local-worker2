@@ -95,8 +95,17 @@ test('Google refusals and streets are read the same way', () => {
   assert.equal(skip(py), skip(ps1), `worker.ps1 changed which streets are skipped: ${PORT}`);
 });
 
+test('both workers take web.shot the same way: only with a browser and the portable Node, with the same spec', () => {
+  assert.ok(ps1.includes("if ($script:NodeReady -and $script:ShotExe) { 'web.shot' }"), 'worker.ps1 no longer gates web.shot on a browser');
+  assert.ok(py.includes("'web.shot' if NodeReady and ShotExe else None,"), `worker.py does not gate web.shot like worker.ps1: ${PORT}`);
+  const a = [...block(ps1, 'url = $p.url; device = $p.device', '}\n').matchAll(/(\w+) = /g)].map((m) => m[1]);
+  const b = [...block(py, "spec = {'url': p.get('url'), 'device'", '}\n').matchAll(/'(\w+)': /g)].map((m) => m[1]);
+  assert.ok(a.length >= 7);
+  assert.deepEqual(b, a, `worker.ps1 sends shot.mjs a different spec: ${PORT}`);
+});
+
 test('the macOS worker runs the Windows worker\'s own job scripts', () => {
-  for (const name of ['fetch.py', 'audit.py']) {
+  for (const name of ['fetch.py', 'audit.py', 'shot.mjs']) {
     assert.ok(py.includes(`SHARED / '${name}'`), `worker.py does not run worker/${name}`);
     assert.ok(!fs.existsSync(path.join(root, 'worker-macos', 'app', name)), `worker-macos/app/${name} is a copy that will drift: delete it`);
   }

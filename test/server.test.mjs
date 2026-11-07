@@ -142,6 +142,71 @@ test('a fetch result lost to a restart is filed again as a fetch', async () => {
   assert.equal(job.status, 'done');
 });
 
+test('shot round trip: opt-in, defaults in the payload, the image back unchanged', async () => {
+  const posted = call('/api/shot', api, { method: 'POST', body: JSON.stringify({ url: 'https://example.com/s', worker: 'pc-shot', find: '  Call us  ' }) });
+  await new Promise((r) => setTimeout(r, 100));
+  // A worker that does not ask for web.shot never gets one.
+  for (const types of ['', '&types=gmap.scan,web.fetch,site.audit,site.lookup']) {
+    const other = await call(`/api/jobs/next?worker=pc-shot&wait=0${types}`, wk);
+    if (other.status === 200) assert.notEqual((await other.json()).job.type, 'web.shot');
+  }
+  const { job } = await (await call('/api/jobs/next?worker=pc-shot&types=web.fetch,web.shot&wait=1', wk)).json();
+  assert.equal(job.type, 'web.shot');
+  assert.deepEqual(job.payload, { url: 'https://example.com/s', device: 'desktop', waitMs: 1500, quality: 72, find: 'Call us', worker: 'pc-shot' });
+  assert.equal(job.timeoutMs, 60_000);
+  assert.equal(Date.parse(job.leaseUntil) - Date.parse(job.startedAt), 90_000);
+  const result = { url: job.payload.url, finalUrl: job.payload.url, status: 404, device: 'desktop', found: true, blocked: false, image: '/9j/AAA', width: 1280, height: 760 };
+  await call(`/api/jobs/${job.id}/result`, wk, { method: 'POST', body: JSON.stringify({ worker: 'pc-shot', type: 'web.shot', ok: true, result }) });
+  const answer = await (await posted).json();
+  assert.equal(answer.job.status, 'done');
+  assert.deepEqual(answer.job.result, result);
+  assert.equal((await (await call(`/api/shot/${job.id}`, api)).json()).job.result.image, '/9j/AAA');
+  const listed = (await (await call('/api/scans?type=web.shot', api)).json()).jobs.find((j) => j.id === job.id);
+  assert.equal(listed.blocked, false);
+  assert.equal(listed.result, undefined);
+});
+
+test('shot checks its input; mobile and options pass through; DELETE cancels', async () => {
+  for (const body of [{}, { url: 'ftp://x.com/' }, { url: 'nope' }, { url: 'https://x.com/', device: 'tablet' }, { url: 'https://x.com/', find: 3 },
+    { url: 'https://x.com/', find: 'x'.repeat(501) }, { url: 'https://x.com/', waitMs: -1 }, { url: 'https://x.com/', waitMs: 30001 },
+    { url: 'https://x.com/', quality: 0 }, { url: 'https://x.com/', quality: 101 }, { url: 'https://x.com/', timeoutMs: 1000 }]) {
+    assert.equal((await call('/api/shot', api, { method: 'POST', body: JSON.stringify(body) })).status, 400, JSON.stringify(body));
+  }
+  const r = await call('/api/shot', api, { method: 'POST', body: JSON.stringify({ url: 'https://example.com/m', device: 'mobile', waitMs: 0, quality: 90, wait: 0, worker: 'pc-shot-m' }) });
+  assert.equal(r.status, 202);
+  const { job } = await r.json();
+  assert.deepEqual(job.payload, { url: 'https://example.com/m', device: 'mobile', waitMs: 0, quality: 90, worker: 'pc-shot-m' });
+  const cancelled = await call(`/api/shot/${job.id}`, api, { method: 'DELETE' });
+  assert.equal((await cancelled.json()).job.error, 'cancelled by the caller');
+  assert.equal((await call('/api/jobs/next?worker=pc-shot-m&types=web.shot&wait=0', wk)).status, 204);
+});
+
+test('a shot no worker takes fails at its timeoutMs', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: Date.now() });
+  const isolated = await import('../server.mjs?shot-clock');
+  const service = await isolated.start(0);
+  t.after(() => service.close());
+  const request = (route, body) => fetch(`http://localhost:${service.address().port}${route}`, {
+    headers: api, ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}),
+  });
+  const queued = (await (await request('/api/shot', { url: 'https://example.com/', timeoutMs: 20000, wait: 0 })).json()).job;
+  for (let i = 0; i < 3; i++) t.mock.timers.tick(5000);
+  assert.equal((await (await request(`/api/shot/${queued.id}`)).json()).job.status, 'pending');
+  for (let i = 0; i < 2; i++) t.mock.timers.tick(5000);
+  const failed = (await (await request(`/api/shot/${queued.id}`)).json()).job;
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.error, 'no worker claimed it within 20 s');
+});
+
+test('a shot result lost to a restart is filed again as a shot', async () => {
+  const id = '0123456789cd';
+  const body = { worker: 'pc-test', type: 'web.shot', ok: true, result: { blocked: true, image: null }, payload: { url: 'https://example.com/', device: 'mobile' } };
+  assert.equal((await call(`/api/jobs/${id}/result`, wk, { method: 'POST', body: JSON.stringify(body) })).status, 200);
+  const { job } = await (await call(`/api/shot/${id}`, api)).json();
+  assert.equal(job.type, 'web.shot');
+  assert.equal(job.result.blocked, true);
+});
+
 test('audit round trip waits by default and preserves the report unchanged', async () => {
   const posted = call('/api/audit', api, { method: 'POST', body: JSON.stringify({ url: ' HTTPS://EXAMPLE.COM:443 ', worker: 'pc-audit' }) });
   const next = await call('/api/jobs/next?worker=pc-audit&types=site.audit&wait=5', wk);

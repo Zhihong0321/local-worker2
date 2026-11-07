@@ -72,3 +72,5 @@ SETTINGS (worker.env)
   WORKER_NAME        name shown by the service (default: mac-<this Mac's name>)
   GMAP_PACE_MS       pause between Google requests (default 500)
   WEB_FETCH=off      Maps scans only
+  WEB_SHOT=off       no screenshots (they use Google Chrome, headless)
+  SHOT_BROWSER       another Chromium browser for screenshots (default: Chrome)
