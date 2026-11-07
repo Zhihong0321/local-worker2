@@ -27,7 +27,8 @@ const DEVICES = {
   desktop: { width: 1280, height: 760, deviceScaleFactor: 1, mobile: false },
   mobile: { width: 390, height: 780, deviceScaleFactor: 2, mobile: true },
 };
-const OUTLINE_PAUSE_MS = 400;
+// Long enough for a scroll-triggered reveal to finish (IJM's homepage needed more than 400 ms on 2026-11-07).
+const OUTLINE_PAUSE_MS = 1500;
 const START_TIMEOUT_MS = 20_000;
 
 class Refused extends Error {}
@@ -218,15 +219,19 @@ function outline(needle) {
 const CHALLENGE_TITLE = /^\s*(just a moment|attention required|please wait\b|verifying you are human|verify you are human|checking your browser|checking if the site connection is secure|ddos-guard|one more step|security check|are you a robot|human verification|pardon our interruption|access to this page has been denied)/i;
 const MARKERS = [
   ['cloudflare challenge', /window\._cf_chl_opt|id="challenge-form"|cf-chl-widget|\/cdn-cgi\/challenge-platform\/h\/[bg]\/orchestrate/i],
-  ['imperva / incapsula', /_Incapsula_Resource|Incapsula incident ID/i],
+  ['imperva / incapsula block page', /Incapsula incident ID/i],
   ['datadome', /captcha-delivery\.com/i],
   ['perimeterx', /px-captcha|_pxCaptcha/i],
   ['akamai', /errors\.edgesuite\.net/i],
   ['google sorry page', /\/sorry\/index|unusual traffic from your computer network/i],
   ['reddit js challenge', /name="js_challenge"/i],
 ];
-/** Captcha widgets: a page made of little else is a bot check; a long page with a form that has one is not. */
+/**
+ * Captcha widgets and bot-check scripts that normal pages carry too (Imperva puts its script on every page it
+ * fronts: Sunway's homepage on 2026-11-07): a page made of little else is a bot check; a long page is not.
+ */
 const WIDGETS = [
+  ['imperva / incapsula', /_Incapsula_Resource/i],
   ['turnstile', /challenges\.cloudflare\.com\/turnstile|class="cf-turnstile/i],
   ['recaptcha', /google\.com\/recaptcha\/api2\/anchor|recaptcha\/api2\/bframe|class="g-recaptcha"/i],
   ['hcaptcha', /hcaptcha\.com\/captcha|class="h-captcha"/i],
