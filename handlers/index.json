@@ -3729,6 +3729,28 @@
       "version": null
     },
     {
+      "id": "MY-commonlii.org/w1",
+      "country": "MY",
+      "host": "commonlii.org",
+      "task": "MY-commonlii.org",
+      "want": "w1",
+      "question": "Which Malaysian cases on CommonLII name the company?",
+      "source_name": "CommonLII: Malaysian case law",
+      "source_url": "http://www.commonlii.org/my/cases/",
+      "tier": 4,
+      "method": null,
+      "pdf": false,
+      "canary": null,
+      "file": null,
+      "tier4": {
+        "reason": "blocked",
+        "evidence": "Checked 2026-11-07 from a worker PC (residential line, pc-desktop-camhl16). The case search https://www.commonlii.org/cgi-bin/sinosrch.cgi?query=...&meta=%2Fmy answers HTTP 403 with title 'Just a moment...', header 'cf-mitigated: challenge', server 'cloudflare' to every reader: Node fetch (what handlers run in), the worker's page reader (curl_cffi, Chrome TLS) and headless Microsoft Edge. http://www.commonlii.org/my/cases/ (the list of databases) also answers the challenge to Node fetch and to the page reader; Edge gets it as a plain page, but it only links to year-by-year case lists, with no way to find a company without the challenged search. Not readable without getting past the challenge."
+      },
+      "browser_steps": null,
+      "verified_at": null,
+      "version": null
+    },
+    {
       "id": "MY-contentforum.my/w1",
       "country": "MY",
       "host": "contentforum.my",
@@ -4321,6 +4343,28 @@
       "browser_steps": null,
       "verified_at": "2026-11-05T03:49:30.770Z",
       "version": "684d928416e9"
+    },
+    {
+      "id": "MY-kehakiman.gov.my/w1",
+      "country": "MY",
+      "host": "kehakiman.gov.my",
+      "task": "MY-kehakiman.gov.my",
+      "want": "w1",
+      "question": "Which published judgments of the Malaysian courts name the company? Read the case number, court, parties, date of decision and catchwords.",
+      "source_name": "Pejabat Ketua Pendaftar Mahkamah Persekutuan Malaysia: eJudgment portal (published judgments)",
+      "source_url": "https://ejudgment.kehakiman.gov.my/EJudgmentWeb/SearchPage.aspx?JurisdictionType=ALL",
+      "tier": 2,
+      "method": "json_api",
+      "pdf": false,
+      "canary": {
+        "found": "ZECON ENGINEERING & CONSTRUCTION SDN BHD",
+        "not_found": "O2O Digital"
+      },
+      "file": "MY/MY-kehakiman.gov.my.w1.mjs",
+      "tier4": null,
+      "browser_steps": null,
+      "verified_at": "2026-11-07T04:44:47.234Z",
+      "version": "825dc70e3c06"
     },
     {
       "id": "MY-lam.gov.my/w1",
