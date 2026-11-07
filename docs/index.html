@@ -115,7 +115,7 @@
 
 <h2 id="shot">Screenshot a page</h2>
 <p><span class="ep">POST</span><span class="path">/api/shot</span></p>
-<p>Opens one page in a headless browser on a worker PC and returns a JPEG of what a visitor sees: a proof screenshot, with an optional text outlined in red. Windows workers use the Microsoft Edge Windows already has, Mac workers Google Chrome; nothing is downloaded. Only workers with that browser take shots (job type <code>web.shot</code>, opt-in like <code>site.audit</code>). The call answers with the shot by default.</p>
+<p>Opens one page in a headless browser on a worker PC and returns a JPEG of what a visitor sees: a proof screenshot, with an optional text outlined in red. Windows workers use the Microsoft Edge Windows already has, Mac workers Google Chrome; nothing is downloaded. Only workers with that browser take shots (job type <code>web.shot</code>, opt-in like <code>site.audit</code>), and only workers on the current version: a Windows PC needs the package downloaded again (<code>GET /api/worker/package</code>), a Mac a <code>git pull</code>. <code>GET /api/workers</code> shows which workers list <code>web.shot</code> in their <code>types</code>. The call answers with the shot by default.</p>
 <pre><code>curl -X POST https://YOUR-SERVICE/api/shot \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
@@ -124,7 +124,7 @@
   <tr><th>Field</th><th>Meaning</th></tr>
   <tr><td><code>url</code></td><td>The page, http or https. Required. Workers refuse private and local addresses, for the page, its redirects and everything the page loads.</td></tr>
   <tr><td><code>device</code></td><td><code>desktop</code> (default): 1280 &times; 760, scale 1. <code>mobile</code>: 390 &times; 780, scale 2, touch, a phone's user agent.</td></tr>
-  <tr><td><code>find</code></td><td>Optional text, up to 500 characters. The first <strong>visible</strong> element whose text contains it (case and runs of spaces ignored, first 60 characters) gets a 4px <code>#e11d48</code> outline offset 4px and a <code>rgba(225,29,72,0.10)</code> background, and is scrolled to the centre of the screen.</td></tr>
+  <tr><td><code>find</code></td><td>Optional text, up to 500 characters. The first <strong>visible</strong> element whose text contains it (case and runs of spaces ignored, first 60 characters) gets a 4px <code>#e11d48</code> outline offset 4px and a <code>rgba(225,29,72,0.10)</code> background, and is scrolled to the centre of the screen. The shot is taken 1.5 s later, so text that fades in on scroll has appeared.</td></tr>
   <tr><td><code>waitMs</code></td><td>Wait after the page's <code>load</code> event before the shot. 0 to 30000, default 1500.</td></tr>
   <tr><td><code>quality</code></td><td>JPEG quality, 1 to 100. Default 72.</td></tr>
   <tr><td><code>wait</code></td><td>Seconds to hold the request. Default: the shot's timeout plus 30 s. <code>0</code> returns <code>202</code> with the job at once.</td></tr>
@@ -145,10 +145,11 @@
   "worker": "pc-...", "tookMs": 4200 }</code></pre>
 <ul>
   <li><strong>Error pages are shot.</strong> A page that answers 4xx or 5xx comes back with its <code>status</code> and an image: the error page is the proof.</li>
-  <li><strong>Bot checks are never answered.</strong> A Cloudflare challenge (<code>cf-mitigated</code> header, "Just a moment..."), Turnstile, reCAPTCHA or hCaptcha on a page with little else, Imperva, DataDome, PerimeterX, Akamai or Google's "unusual traffic" page gives <code>blocked: true</code>, no image, and the evidence:
+  <li><strong>Bot checks are never answered.</strong> A Cloudflare challenge (<code>cf-mitigated</code> header, "Just a moment..."), Reddit's JS challenge, an Imperva incident page, DataDome, PerimeterX, Akamai's "Access Denied", Google's "unusual traffic" page, and Turnstile, reCAPTCHA, hCaptcha or Imperva's script on a page with little else, gives <code>blocked: true</code>, no image, and the evidence:
 <pre><code>"detail": { "evidence": ["header cf-mitigated: challenge", "title "Just a moment...""],
   "title": "Just a moment...", "url": "...", "status": 403, "server": "cloudflare", "text": "..." }</code></pre>
-  The browser stops at the challenge page; it is never left to run and clear itself.</li>
+  The browser stops at the challenge page; it is never left to run and clear itself. A long page that only carries a captcha in a form, or a bot-protection script, is shot as normal.</li>
+  <li><strong>What is challenged depends on the browser, not only the site.</strong> Checked from a worker PC on 2026-11-07: a commonlii.org search page is challenged (<code>blocked: true</code>), while mia.org.my and bursamalaysia.com answer a real browser with the page.</li>
   <li><strong>Failures.</strong> A page that does not load at all (DNS, refused, TLS), a private address, or a browser that will not start fails the job with an <code>error</code>. With no <code>web.shot</code> worker online, the job fails at <code>timeoutMs</code>.</li>
   <li>The hub keeps the last 100 finished shots; fetch the image when the job finishes.</li>
 </ul>
@@ -288,6 +289,7 @@
   <tr><td><code>400</code></td><td>Invalid timeout or malformed JSON.</td></tr>
 </table>
 <p>Poll with <code>GET /api/lookup/{id}?wait=60</code>; cancel with <code>DELETE /api/lookup/{id}</code>. An unknown job returns <code>404</code>; cancelling an already finished job returns <code>409</code>.</p>
+<p class="note">Why a site is tier 4 is in its <code>tier4.evidence</code>, with the date it was checked. Some Cloudflare sites challenge the handler's own reader (Node) but answer the worker's page reader: their evidence names the page to read with <code>/api/fetch</code> instead (rechecked 2026-11-07: bursamalaysia.com, mia.org.my, e-merger.mia.org.my).</p>
 <p class="note">At most one lookup per host runs across all workers, including different handlers on the same host. Other lookups for that host queue until completion, cancellation or lease expiry; different hosts can run in parallel. Workers must explicitly request <code>site.lookup</code> in their poll types. Google cooldown does not block lookups.</p>
 
 <h3>Handler library and health</h3>
