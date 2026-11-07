@@ -155,7 +155,26 @@ function connect(url) {
 function pageFacts() {
   const html = document.documentElement ? document.documentElement.outerHTML.slice(0, 300000) : '';
   const text = (document.body ? document.body.innerText || '' : '').replace(/\s+/g, ' ').trim();
-  return { title: document.title || '', href: location.href, html, textLength: text.length, text: text.slice(0, 300) };
+  return { title: document.title || '', href: location.href, html, textLength: text.length, text: text.slice(0, 300), stopped: window.__lgwChallenge || null };
+}
+
+/**
+ * Runs in every page before its own scripts. A challenge that solves itself in the page (Reddit's js_challenge form,
+ * a Cloudflare challenge form) is stopped before it can submit: it is never left to clear itself.
+ */
+function guard() {
+  const MARKS = [['reddit js challenge', 'form input[name="js_challenge"]'], ['cloudflare challenge', '#challenge-form, #cf-challenge-running']];
+  const stop = () => {
+    if (window.__lgwChallenge) return;
+    const hit = MARKS.filter(([, css]) => document.querySelector(css)).map(([name]) => name);
+    if (!hit.length) return;
+    window.__lgwChallenge = hit;
+    HTMLFormElement.prototype.submit = function () {};
+    HTMLFormElement.prototype.requestSubmit = function () {};
+    window.stop();
+  };
+  document.addEventListener('DOMContentLoaded', stop, { capture: true, once: true });
+  document.addEventListener('submit', (e) => { stop(); if (window.__lgwChallenge) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
 }
 
 /** Runs in the page: outline the first visible element holding `needle`. Copies shots.ts. */
@@ -204,6 +223,7 @@ const MARKERS = [
   ['perimeterx', /px-captcha|_pxCaptcha/i],
   ['akamai', /errors\.edgesuite\.net/i],
   ['google sorry page', /\/sorry\/index|unusual traffic from your computer network/i],
+  ['reddit js challenge', /name="js_challenge"/i],
 ];
 /** Captcha widgets: a page made of little else is a bot check; a long page with a form that has one is not. */
 const WIDGETS = [
@@ -220,6 +240,7 @@ function botCheck(facts, response) {
   if (mitigated) found.push(`header cf-mitigated: ${mitigated}`);
   if (CHALLENGE_TITLE.test(facts.title)) found.push(`title "${facts.title.trim().slice(0, 80)}"`);
   for (const [name, re] of MARKERS) if (re.test(facts.html)) found.push(name);
+  for (const name of facts.stopped ?? []) found.push(`${name} (stopped before it could submit)`);
   if (facts.textLength < SHORT_PAGE) for (const [name, re] of WIDGETS) if (re.test(facts.html)) found.push(`${name} on a short page`);
   if (!found.length) return null;
   return {
@@ -294,6 +315,7 @@ async function shot(job) {
     await send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] });
     await send('Network.enable');
     await send('Page.enable');
+    await send('Page.addScriptToEvaluateOnNewDocument', { source: `(${guard})()` });
     const { userAgent } = await cdp.send('Browser.getVersion');
     // The browser as a person runs it: no "Headless" in its name, a phone's for a phone.
     const major = /(?:Chrome|Chromium)\/(\d+)/.exec(userAgent)?.[1] ?? '141';
@@ -316,7 +338,13 @@ async function shot(job) {
     }
     // The load event, leaving time for the wait and the shot itself.
     const loadBy = deadline - waitMs - 5_000;
-    while (!loaded && !challenged && Date.now() < loadBy) await sleep(100);
+    const guarded = async () => {
+      try { return (await send('Runtime.evaluate', { expression: '!!window.__lgwChallenge', returnByValue: true })).result.value === true; } catch { return false; }
+    };
+    for (let i = 0; !loaded && !challenged && Date.now() < loadBy; i++) {
+      await sleep(100);
+      if (response && i % 5 === 4 && await guarded()) break;
+    }
     if (challenged) await sleep(300);
     if (!loaded && !response) throw new Refused(`the page did not load within ${Math.round((Date.now() - started) / 1000)} s`);
 
