@@ -19,7 +19,8 @@ export const meta = {
 };
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
-const TIMEOUT_MS = 30000;
+// The court site answered in 6 to 15 s on 2026-11-07, and once took over 30 s during the hub's full canary run.
+const TIMEOUT_MS = 45000;
 const PAGE_URL = 'https://ejudgment.kehakiman.gov.my/EJudgmentWeb/SearchPage.aspx?JurisdictionType=ALL';
 const API = 'https://ejudgment.kehakiman.gov.my/EJudgmentWeb/eJudgmentService.asmx/GetEJudgmentPortalSearchList';
 const DOC = 'https://efs.kehakiman.gov.my/EFSWeb/DocDownloader.aspx?Inline=true&DocumentID=';
