@@ -13,6 +13,12 @@
 #
 # The URL comes from an API caller and this runs inside someone's home or
 # office, so every hop, redirects included, must resolve to a public address.
+#
+# Two opt-in fields; left out, the answer is what it always was:
+#   keepErrors  a 4xx or 5xx answer comes back with its status and body instead
+#               of failing the job. Network errors (DNS, refused, TLS) still fail.
+#   headers     the answer adds `headers` (the final response's, names in lower
+#               case) and `redirects`, one {url, status, location} per hop.
 import contextlib
 import ipaddress
 import json
@@ -92,6 +98,19 @@ def main_part(page):
     return Selector(root=root, url=page.url)
 
 
+def header_map(response):
+    """The response's headers, names in lower case. A repeated header is joined with ', ',
+    as HTTP allows; Set-Cookie, which cannot be joined that way, with a newline."""
+    out = {}
+    for name, value in response.headers.multi_items():
+        name = name.lower()
+        if name in out:
+            out[name] += ('\n' if name == 'set-cookie' else ', ') + value
+        else:
+            out[name] = value
+    return out
+
+
 def is_pdf(ctype, raw):
     return ctype in ('application/pdf', 'application/x-pdf') or raw[:5] == b'%PDF-'
 
@@ -137,15 +156,19 @@ def fetch(job):
     fmt = job.get('format') or 'markdown'
     if fmt not in ('markdown', 'text', 'html'):
         raise Refused(f'format is markdown, text or html, not {fmt}')
+    keep_errors = job.get('keepErrors') is True
+    want_headers = job.get('headers') is True
     started = time.time()
     deadline = started + max(5, int(job.get('timeoutMs') or 60000) / 1000 - 5)
     session = requests.Session(impersonate='chrome')
+    hops = []
     for _ in range(MAX_REDIRECTS + 1):
         check(url)
         r = session.get(url, allow_redirects=False, stream=True, timeout=max(1, deadline - time.time()))
         location = r.headers.get('location')
         if r.status_code in (301, 302, 303, 307, 308) and location:
             r.close()
+            hops.append({'url': url, 'status': r.status_code, 'location': urljoin(url, location)})
             url = urljoin(url, location)
             continue
         break
@@ -165,12 +188,17 @@ def fetch(job):
             raise Refused('the site was too slow to send the page')
     r.close()
     raw = b''.join(chunks)[:limit]
-    if r.status_code >= 400:
+    failed = r.status_code >= 400
+    if failed and not keep_errors:
         raise Refused(f'the site answered HTTP {r.status_code}')
 
     title = None
     out_fmt = fmt
-    if is_pdf(ctype, raw):
+    if failed and not raw.strip():
+        # keepErrors: an error answer with no body is still an answer.
+        content = ''
+        out_fmt = 'text'
+    elif is_pdf(ctype, raw):
         if truncated:
             raise Refused(f'the PDF is over {MAX_PDF_BYTES // (1024 * 1024)} MB')
         title, content, truncated = read_pdf(raw, fmt, deadline)
@@ -188,15 +216,23 @@ def fetch(job):
         # _extract_content is Scrapling's own md/txt/html export (scrapling extract). Private,
         # so the worker pins the Scrapling version it installs.
         content = ''.join(Convertor._extract_content(page, fmt, main_content_only=True)).strip()
+    elif failed:
+        # keepErrors: an error page of another type comes back as its text.
+        content = raw.decode(charset(r, raw[:4096]), errors='replace')
+        out_fmt = 'text'
     else:
         raise Refused(f'not a page: {url} is {ctype}')
 
-    return {
+    result = {
         'url': job.get('url'), 'finalUrl': url, 'status': r.status_code, 'contentType': ctype or None,
         'title': title, 'format': out_fmt, 'content': content,
         'length': len(content), 'truncated': truncated, 'provider': 'scrapling-local',
         'tookMs': int((time.time() - started) * 1000),
     }
+    if want_headers:
+        result['headers'] = header_map(r)
+        result['redirects'] = hops
+    return result
 
 
 if __name__ == '__main__':

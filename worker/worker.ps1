@@ -547,6 +547,9 @@ function Invoke-Fetch($Job) {
   $p = $Job.payload
   $file = Join-Path $Data "fetch-$($Job.id).json"
   $spec = @{ url = $p.url; format = $p.format; mainContent = ($p.mainContent -ne $false); timeoutMs = [int]$Job.timeoutMs }
+  # Opt-in fields: an error page kept as an answer, and the response headers with the redirect hops.
+  if ($p.keepErrors -eq $true) { $spec.keepErrors = $true }
+  if ($p.headers -eq $true) { $spec.headers = $true }
   [IO.File]::WriteAllText($file, ($spec | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
   try {
     $psi = New-Object Diagnostics.ProcessStartInfo $PyExe

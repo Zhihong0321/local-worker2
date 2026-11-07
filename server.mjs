@@ -359,8 +359,14 @@ function readFetch(body) {
   if (!Number.isFinite(timeoutMs) || timeoutMs < FETCH_MIN_TIMEOUT_MS || timeoutMs > FETCH_MAX_TIMEOUT_MS) {
     return { error: `timeoutMs is from ${FETCH_MIN_TIMEOUT_MS} to ${FETCH_MAX_TIMEOUT_MS}` };
   }
+  for (const flag of ['keepErrors', 'headers']) {
+    if (body[flag] != null && typeof body[flag] !== 'boolean') return { error: `${flag} is a boolean` };
+  }
   // The worker refuses private and local addresses itself: only it sees what the name resolves to.
   const payload = { url: url.href, format, mainContent: body.mainContent !== false };
+  // Opt-in, and only set when asked: a fetch without them is the same job it always was.
+  if (body.keepErrors === true) payload.keepErrors = true;
+  if (body.headers === true) payload.headers = true;
   if (str(body.worker).trim()) payload.worker = str(body.worker).trim();
   return { payload, timeoutMs };
 }

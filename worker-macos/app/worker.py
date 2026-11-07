@@ -675,6 +675,11 @@ def invoke_fetch(job):
     p = job.get('payload') or {}
     file = DATA / f"fetch-{job['id']}.json"
     spec = {'url': p.get('url'), 'format': p.get('format'), 'mainContent': p.get('mainContent') is not False, 'timeoutMs': to_int(job.get('timeoutMs'))}
+    # Opt-in fields: an error page kept as an answer, and the response headers with the redirect hops.
+    if p.get('keepErrors') is True:
+        spec['keepErrors'] = True
+    if p.get('headers') is True:
+        spec['headers'] = True
     write_text(file, json.dumps(spec, separators=(',', ':')))
     try:
         timeout_ms = to_int(job.get('timeoutMs'))

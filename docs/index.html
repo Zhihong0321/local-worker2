@@ -96,15 +96,22 @@
   <tr><td><code>wait</code></td><td>Seconds to hold the request. Default: the fetch's timeout plus 30 s. <code>0</code> returns <code>202</code> with the job at once.</td></tr>
   <tr><td><code>timeoutMs</code></td><td>10000 to 300000. Default 60000. A fetch no worker claims within this fails.</td></tr>
   <tr><td><code>worker</code></td><td>Pin the fetch to one worker by name.</td></tr>
+  <tr><td><code>keepErrors</code></td><td>Default <code>false</code>. <code>true</code>: a page that answers 4xx or 5xx comes back as a <code>done</code> job with its <code>status</code> and body, instead of failing. Network errors (DNS, refused, TLS) still fail.</td></tr>
+  <tr><td><code>headers</code></td><td>Default <code>false</code>. <code>true</code>: the result adds <code>headers</code> and <code>redirects</code> (below).</td></tr>
 </table>
 <p>The job's <code>result</code>:</p>
 <pre><code>{ "url": "...", "finalUrl": "...",   // finalUrl after redirects
   "status": 200, "contentType": "text/html", "title": "...",
   "format": "markdown", "content": "# ...", "length": 14832,
   "truncated": false,                // true past 5 MB of page, or PDF pages left out
-  "provider": "scrapling-local", "tookMs": 1079, "worker": "pc-..." }</code></pre>
+  "provider": "scrapling-local", "tookMs": 1079, "worker": "pc-..." }
+
+// with "headers": true, also:
+  "headers": { "server": "nginx", "content-type": "text/html; charset=UTF-8", ... },
+  "redirects": [ { "url": "http://example.com/", "status": 301, "location": "https://example.com/" } ]</code></pre>
+<p><code>headers</code> are the final response's, names in lower case; a repeated header is joined with <code>", "</code> (<code>set-cookie</code> with a newline). <code>redirects</code> has one entry per hop, in order, with <code>location</code> made absolute; it is empty when the page did not redirect.</p>
 <p><strong>PDFs</strong> come back as markdown, tables as markdown tables (<code>format: "text"</code> gives plain text). A PDF reads at about 0.4 s a page: past the fetch's deadline it returns the pages it has with <code>truncated: true</code>, so send a larger <code>timeoutMs</code> for very long ones. Limits: 30 MB and 300 pages. Scanned PDFs without a text layer come back nearly empty.</p>
-<p>A site answering HTTP 400 or above, another kind of file (image, Word) or a refused address fails the job with an <code>error</code>. Plain text and JSON come back as they are. Pages are read without a browser, so content drawn only by JavaScript is not there.</p>
+<p>Without <code>keepErrors</code>, a site answering HTTP 400 or above fails the job (<code>"the site answered HTTP 404"</code>). With it, an error page comes back as markdown, text or HTML like any page, as its text if it is another type, and as an empty <code>content</code> if it has no body. Another kind of file (image, Word) or a refused address fails the job with an <code>error</code>. Plain text and JSON come back as they are. Pages are read without a browser, so content drawn only by JavaScript is not there.</p>
 
 <h2 id="audit">Audit a website</h2>
 <p><span class="ep">POST</span><span class="path">/api/audit</span></p>

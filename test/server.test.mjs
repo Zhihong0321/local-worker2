@@ -97,8 +97,26 @@ test('fetch round trip: only a worker asking for web.fetch gets it', async () =>
   assert.equal((await (await call(`/api/fetch/${job.id}`, api)).json()).job.status, 'done');
 });
 
+test('fetch passes keepErrors and headers only when asked', async () => {
+  const posted = call('/api/fetch', api, { method: 'POST', body: JSON.stringify({ url: 'https://example.com/k', worker: 'pc-flags', keepErrors: true, headers: true }) });
+  await new Promise((r) => setTimeout(r, 100));
+  const { job } = await (await call('/api/jobs/next?worker=pc-flags&types=web.fetch&wait=1', wk)).json();
+  assert.deepEqual(job.payload, { url: 'https://example.com/k', format: 'markdown', mainContent: true, keepErrors: true, headers: true, worker: 'pc-flags' });
+  const result = { url: job.payload.url, status: 404, content: 'Not found', headers: { server: 'x' }, redirects: [] };
+  await call(`/api/jobs/${job.id}/result`, wk, { method: 'POST', body: JSON.stringify({ worker: 'pc-flags', ok: true, result }) });
+  assert.deepEqual((await (await posted).json()).job.result, result);
+  // false is the same as left out: the payload is the one a fetch always had.
+  const plain = call('/api/fetch', api, { method: 'POST', body: JSON.stringify({ url: 'https://example.com/p', worker: 'pc-flags', keepErrors: false, headers: false }) });
+  await new Promise((r) => setTimeout(r, 100));
+  const { job: other } = await (await call('/api/jobs/next?worker=pc-flags&types=web.fetch&wait=1', wk)).json();
+  assert.deepEqual(other.payload, { url: 'https://example.com/p', format: 'markdown', mainContent: true, worker: 'pc-flags' });
+  await call(`/api/jobs/${other.id}/result`, wk, { method: 'POST', body: JSON.stringify({ worker: 'pc-flags', ok: false, error: 'the site answered HTTP 404' }) });
+  assert.equal((await (await plain).json()).job.error, 'the site answered HTTP 404');
+});
+
 test('fetch checks its input', async () => {
-  for (const body of [{}, { url: 'ftp://x.com/' }, { url: 'nope' }, { url: 'https://x.com/', format: 'pdf' }, { url: 'https://x.com/', timeoutMs: 1000 }]) {
+  for (const body of [{}, { url: 'ftp://x.com/' }, { url: 'nope' }, { url: 'https://x.com/', format: 'pdf' }, { url: 'https://x.com/', timeoutMs: 1000 },
+    { url: 'https://x.com/', keepErrors: 'yes' }, { url: 'https://x.com/', headers: 1 }]) {
     assert.equal((await call('/api/fetch', api, { method: 'POST', body: JSON.stringify(body) })).status, 400, JSON.stringify(body));
   }
 });
