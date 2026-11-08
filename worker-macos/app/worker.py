@@ -902,7 +902,7 @@ def start_chat_bridge():
 def invoke_chat(job):
     p = job.get('payload') or {}
     file = DATA / f"chat-{job['id']}.json"
-    spec = {'id': job['id'], 'prompt': p.get('prompt'), 'model': p.get('model'), 'timeoutMs': to_int(job.get('timeoutMs'))}
+    spec = {'id': job['id'], 'prompt': p.get('prompt'), 'timeoutMs': to_int(job.get('timeoutMs'))}
     write_text(file, json.dumps(spec, separators=(',', ':')))
     try:
         timeout_ms = to_int(job.get('timeoutMs'))

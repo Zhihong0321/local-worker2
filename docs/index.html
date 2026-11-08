@@ -317,7 +317,7 @@
 
 <h2 id="chat">Chat with web ChatGPT</h2>
 <p><span class="ep">POST</span><span class="path">/api/chat</span></p>
-<p>Routes prompts to an active web ChatGPT session in a worker PC's browser (via the Local Worker Chrome extension), captures the live generated answer, and returns it as an API response.</p>
+<p>Routes prompts to an active web ChatGPT session in a worker PC's browser (via the Local Worker Chrome extension), captures the live generated answer, and returns it as an API response. Every prompt opens its own new, <b>unpersonalized temporary chat</b>: it does not see earlier prompts, the account's memory or its custom instructions, and it is not saved to the account's history. The model is ChatGPT's default and cannot be chosen. If the tab cannot leave an old chat, the job fails with a "send the prompt again" message while the tab reloads.</p>
 <pre><code>curl -X POST https://YOUR-SERVICE/api/chat \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
@@ -325,8 +325,7 @@
 <table>
   <tr><th>Field</th><th>Meaning</th></tr>
   <tr><td><code>prompt</code></td><td>The question or prompt to send to ChatGPT. Required.</td></tr>
-  <tr><td><code>model</code></td><td>Optional model selection (default <code>"auto"</code>).</td></tr>
-  <tr><td><code>wait</code></td><td>Seconds to hold the request open for the result, up to 900. Default: timeout plus 30 s. <code>0</code> returns <code>202</code> at once.</td></tr>
+    <tr><td><code>wait</code></td><td>Seconds to hold the request open for the result, up to 900. Default: timeout plus 30 s. <code>0</code> returns <code>202</code> at once.</td></tr>
   <tr><td><code>timeoutMs</code></td><td>Job deadline, 10000 to 600000. Default 180000 (3 minutes).</td></tr>
   <tr><td><code>worker</code></td><td>Pin the job to one worker by name.</td></tr>
 </table>

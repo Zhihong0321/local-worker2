@@ -31,7 +31,7 @@ async function main() {
     const res = await fetch(`${BRIDGE_URL}/ask`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id, prompt, model: spec.model, timeoutMs }),
+      body: JSON.stringify({ id, prompt, timeoutMs }),
       signal: controller.signal,
     });
     clearTimeout(timer);

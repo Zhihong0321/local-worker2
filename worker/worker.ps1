@@ -823,7 +823,7 @@ function Start-ChatBridge {
 function Invoke-Chat($Job) {
   $p = $Job.payload
   $file = Join-Path $Data "chat-$($Job.id).json"
-  $spec = @{ id = $Job.id; prompt = $p.prompt; model = $p.model; timeoutMs = [int]$Job.timeoutMs }
+  $spec = @{ id = $Job.id; prompt = $p.prompt; timeoutMs = [int]$Job.timeoutMs }
   [IO.File]::WriteAllText($file, ($spec | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
   $proc = $null
   try {

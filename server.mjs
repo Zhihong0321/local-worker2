@@ -436,12 +436,11 @@ function readChat(body) {
   const prompt = str(body.prompt ?? body.question ?? body.message).trim();
   if (!prompt) return { error: 'prompt is required' };
   if (prompt.length > 100_000) return { error: 'prompt is at most 100000 characters' };
-  const model = body.model == null ? 'auto' : str(body.model).trim();
   const timeoutMs = body.timeoutMs == null ? CHAT_DEFAULT_TIMEOUT_MS : Number(body.timeoutMs);
   if (!Number.isFinite(timeoutMs) || timeoutMs < CHAT_MIN_TIMEOUT_MS || timeoutMs > CHAT_MAX_TIMEOUT_MS) {
     return { error: `timeoutMs is from ${CHAT_MIN_TIMEOUT_MS} to ${CHAT_MAX_TIMEOUT_MS}` };
   }
-  const payload = { prompt, model };
+  const payload = { prompt };
   if (str(body.worker).trim()) payload.worker = str(body.worker).trim();
   return { payload, timeoutMs };
 }

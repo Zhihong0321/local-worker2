@@ -103,13 +103,109 @@
     return answer;
   }
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const findInput = () => document.querySelector('#prompt-textarea') ||
+                          document.querySelector('div[contenteditable="true"]') ||
+                          document.querySelector('textarea');
+
+  // Every prompt starts in a new, temporary chat: earlier prompts in the tab must not steer the answer, and a
+  // temporary chat does not read the account's memory. The model is never touched (ChatGPT's default).
+  const hasConversation = () => !!document.querySelector('[data-message-author-role]') ||
+    /You said:/i.test(String(document.querySelector('main')?.innerText || ''));
+  const tempToggle = () => [...document.querySelectorAll('button, a, [role="switch"]')]
+    .find((e) => /temporary/i.test((e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-testid') || '') + ' ' + (e.innerText || '').slice(0, 40)));
+  const isTemporary = () => {
+    const t = tempToggle();
+    const label = t ? (t.getAttribute('aria-label') || t.innerText || '') : '';
+    return /turn off temporary/i.test(label) || t?.getAttribute('aria-pressed') === 'true' || t?.getAttribute('aria-checked') === 'true' ||
+      /temporary chat/i.test(String(document.querySelector('main')?.innerText || '').slice(0, 400));
+  };
+  async function openFreshChat() {
+    if (hasConversation()) {
+      for (const b of document.querySelectorAll('a[data-testid="create-new-chat-button"], button[data-testid="create-new-chat-button"], button[aria-label="New chat" i], a[aria-label="New chat" i]')) {
+        b.click();
+        for (let i = 0; i < 10 && hasConversation(); i++) await sleep(200);
+        if (!hasConversation()) break;
+      }
+    }
+    if (hasConversation()) {
+      // ChatGPT's own shortcut for a new chat.
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'O', code: 'KeyO', ctrlKey: true, shiftKey: true, bubbles: true }));
+      for (let i = 0; i < 15 && hasConversation(); i++) await sleep(200);
+    }
+    for (let i = 0; i < 25 && !findInput(); i++) await sleep(200);
+    if (!hasConversation() && !isTemporary()) {
+      const t = tempToggle();
+      if (t) { t.click(); await sleep(800); }
+    }
+    for (let i = 0; i < 25 && !findInput(); i++) await sleep(200);
+    const unpersonalized = await chooseUnpersonalized();
+    return { fresh: !hasConversation(), temporary: isTemporary(), unpersonalized };
+  }
+
+  // A temporary chat is "Personalized" by default: it can read the account's memory and custom instructions. The
+  // "Unpersonalized" choice of that menu makes this one chat ignore them, so the answer is what a stranger would get.
+  const press = (el) => {
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
+      const E = type.startsWith('pointer') ? PointerEvent : MouseEvent;
+      el.dispatchEvent(new E(type, { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse', isPrimary: true }));
+    }
+    el.click();
+  };
+  async function chooseUnpersonalized() {
+    const radio = () => [...document.querySelectorAll('[role="menuitemradio"]')].find((e) => /^\s*Unpersonali[sz]ed/i.test(e.innerText || ''));
+    const trigger = [...document.querySelectorAll('button')].find((e) => /^\s*(Un)?personali[sz]ed\s*$/i.test(String(e.innerText || '')));
+    if (!trigger) return false;
+    if (/^\s*Unpersonali/i.test(trigger.innerText || '')) return true;
+    trigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse', isPrimary: true }));
+    for (let i = 0; i < 10 && !radio(); i++) await sleep(150);
+    const r = radio();
+    if (!r) return false;
+    press(r);
+    await sleep(600);
+    if (document.querySelector('[role="menu"]')) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+    const now = [...document.querySelectorAll('button')].find((e) => /^\s*(Un)?personali[sz]ed\s*$/i.test(String(e.innerText || '')));
+    return !!now && /^\s*Unpersonali/i.test(now.innerText || '');
+  }
+
+  const pageState = (chat) => ({
+    url: location.href, chat, conversation: hasConversation(),
+    controls: [...document.querySelectorAll('a[href="/"], [data-testid*="chat" i], [aria-label*="chat" i], [aria-label*="temporary" i], [data-testid*="temporary" i]')]
+      .filter((e) => !/Pin chat|Chat actions/.test(e.getAttribute('aria-label') || '')).slice(0, 20)
+      .map((e) => [e.tagName, e.getAttribute('data-testid'), e.getAttribute('aria-label'), e.getAttribute('href'), e.getAttribute('aria-pressed'), e.getAttribute('aria-checked')].filter(Boolean).join('|')),
+    personal: [...document.querySelectorAll('button, [role="switch"], [role="menuitem"], [role="menuitemcheckbox"], label')]
+      .filter((e) => /personali|memory/i.test((e.innerText || '') + ' ' + (e.getAttribute('aria-label') || '')))
+      .slice(0, 10).map((e) => [e.tagName, e.getAttribute('role'), e.getAttribute('data-testid'), e.getAttribute('aria-label'), e.getAttribute('aria-pressed'), e.getAttribute('aria-checked'), e.getAttribute('aria-haspopup'), String(e.innerText || '').slice(0, 60)].filter(Boolean).join('|')),
+    answers: document.querySelectorAll('[data-message-author-role="assistant"]').length,
+    turns: document.querySelectorAll('article, [data-testid^="conversation-turn"]').length,
+    top: String((document.querySelector('main') || document.body).innerText || '').slice(0, 300),
+  });
+
   async function executePrompt(task, sendResponse) {
     isCurrentlyGenerating = true;
+    updateBadge('busy', 'Worker: Opening a new chat...');
+    let chat = { fresh: false, temporary: false };
+    if (task.freshChat !== false) {
+      try { chat = await openFreshChat(); } catch (err) { console.log('[ChatGPT Worker Extension] new chat failed: ' + err.message); }
+    }
+    // A health check of the page itself: nothing is sent to ChatGPT.
+    if (task.prompt === '__LGW_PAGE_STATE__') {
+      isCurrentlyGenerating = false;
+      updateBadge('ready');
+      sendResponse({ id: task.id, type: 'error', error: 'page state: ' + JSON.stringify(pageState(chat)) });
+      return;
+    }
+    if (task.freshChat !== false && !chat.fresh) {
+      // The page would not leave the old chat: load a new temporary chat and ask the caller to send again.
+      isCurrentlyGenerating = false;
+      updateBadge('busy', 'Worker: Reloading into a new chat...');
+      sendResponse({ id: task.id, type: 'error', error: 'the ChatGPT tab could not leave the old chat; it is reloading into a new temporary chat, send the prompt again: ' + JSON.stringify(pageState(chat)) });
+      setTimeout(() => location.assign('https://chatgpt.com/?temporary-chat=true'), 300);
+      return;
+    }
     updateBadge('busy', 'Worker: Entering prompt...');
 
-    const promptInput = document.querySelector('#prompt-textarea') ||
-                        document.querySelector('div[contenteditable="true"]') ||
-                        document.querySelector('textarea');
+    const promptInput = findInput();
     if (!promptInput) {
       isCurrentlyGenerating = false;
       updateBadge('ready');
@@ -186,12 +282,33 @@
         return;
       }
 
+      // Nothing started 30 s after Send: say what the page looks like instead of waiting out the bridge's timeout.
+      if (!started && Date.now() - startTime > 30000) {
+        clearInterval(poller);
+        isCurrentlyGenerating = false;
+        updateBadge('ready');
+        const input = findInput();
+        const btn = document.querySelector('button[data-testid="send-button"], button[aria-label*="Send"]');
+        sendResponse({
+          id: task.id,
+          type: 'error',
+          error: 'the prompt did not start: ' + JSON.stringify({
+            url: location.href, chat, input: input ? (input.id || input.tagName) + ':' + String(input.innerText || input.value || '').slice(0, 60) : null,
+            send: btn ? (btn.disabled ? 'disabled' : 'enabled') : 'missing',
+            main: String((document.querySelector('main') || document.body).innerText || '').slice(-200),
+            controls: [...document.querySelectorAll('a[href="/"], a[href^="/?"], [data-testid*="chat" i], [aria-label*="chat" i], [aria-label*="temporary" i]')].slice(0, 25)
+              .map((e) => [e.tagName, e.getAttribute('data-testid'), e.getAttribute('aria-label'), e.getAttribute('href'), e.getAttribute('aria-pressed')].filter(Boolean).join('|')),
+          })
+        });
+        return;
+      }
+
       // Finished when:
       // 1. Generation started, stop button is gone, and new text is stable for 3 checks (600ms)
-      // 2. OR hard timeout safeguard after 45s if we have text
+      // 2. OR hard timeout safeguard after 170s if we have text (a web-search answer can take over a minute)
       const isComplete =
         (started && !isStopBtnVisible && stableTicks >= 3 && lastAnswer.length > 0) ||
-        (Date.now() - startTime > 45000 && lastAnswer.length > 0);
+        (Date.now() - startTime > 170000 && lastAnswer.length > 0);
 
       if (isComplete) {
         clearInterval(poller);
@@ -201,7 +318,9 @@
           id: task.id,
           type: 'done',
           ok: true,
-          answer: lastAnswer
+          answer: lastAnswer,
+          fresh: chat.fresh,
+          temporary: chat.temporary
         });
       }
     }, 200);

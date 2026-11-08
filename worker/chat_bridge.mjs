@@ -74,7 +74,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const task = { id, action: 'prompt', prompt, model: body.model || 'auto' };
+    const task = { id, action: 'prompt', prompt };
     activeWsClient.send(task);
 
     const answer = await new Promise((resolve) => {
