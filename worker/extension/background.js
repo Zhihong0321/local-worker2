@@ -139,7 +139,14 @@ async function handleIncomingTask(task) {
   }
 }
 
-// Keep service worker alive
+// Keep service worker alive via events and ping from content script
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.action === 'ping') {
+    if (!isConnected) connectWebSocket();
+    sendResponse({ ok: true, connected: isConnected });
+  }
+});
+
 setInterval(() => {
   if (!isConnected) connectWebSocket();
   else updateStatusBadge();

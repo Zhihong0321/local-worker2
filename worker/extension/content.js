@@ -35,11 +35,33 @@
     if (state === 'busy') {
       badge.style.background = '#f39c12';
       badge.innerText = text || 'Worker: Generating...';
+    } else if (state === 'disconnected') {
+      badge.style.background = '#e74c3c';
+      badge.innerText = text || 'Worker: Disconnected';
     } else {
       badge.style.background = '#27ae60';
       badge.innerText = text || 'Worker Bridge: Ready';
     }
   }
+
+  let isCurrentlyGenerating = false;
+
+  // Keep background service worker awake and verify connection
+  setInterval(() => {
+    try {
+      chrome.runtime.sendMessage({ action: 'ping' }, (res) => {
+        if (chrome.runtime.lastError) {
+          if (!isCurrentlyGenerating) updateBadge('disconnected', 'Worker: Disconnected');
+          return;
+        }
+        if (res && res.connected) {
+          if (!isCurrentlyGenerating) updateBadge('ready');
+        } else {
+          if (!isCurrentlyGenerating) updateBadge('disconnected', 'Worker: Connecting...');
+        }
+      });
+    } catch {}
+  }, 2500);
 
   // --- Input Helper (ProseMirror & Rich-Text Compatible) ---
   function setPromptText(inputEl, text) {
@@ -82,12 +104,14 @@
   }
 
   async function executePrompt(task, sendResponse) {
+    isCurrentlyGenerating = true;
     updateBadge('busy', 'Worker: Entering prompt...');
 
     const promptInput = document.querySelector('#prompt-textarea') ||
                         document.querySelector('div[contenteditable="true"]') ||
                         document.querySelector('textarea');
     if (!promptInput) {
+      isCurrentlyGenerating = false;
       updateBadge('ready');
       sendResponse({
         id: task.id,
@@ -111,6 +135,7 @@
                     document.querySelector('form button[type="submit"]');
 
     if (!sendBtn) {
+      isCurrentlyGenerating = false;
       updateBadge('ready');
       sendResponse({
         id: task.id,
@@ -170,6 +195,7 @@
 
       if (isComplete) {
         clearInterval(poller);
+        isCurrentlyGenerating = false;
         updateBadge('ready');
         sendResponse({
           id: task.id,
