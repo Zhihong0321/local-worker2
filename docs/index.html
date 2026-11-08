@@ -48,9 +48,9 @@
 <main>
 
 <h1>Local Gmap Worker API</h1>
-<p class="lead">Google Maps business scans, web page reads, page screenshots, and SEO and GEO website audits as an API. Jobs run on Windows worker PCs and are posted back here.</p>
+<p class="lead">Google Maps business scans, web page reads, page screenshots, SEO and GEO website audits, and web ChatGPT queries as an API. Jobs run on worker PCs and are posted back here.</p>
 <nav>
-  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#fetch">Fetch a page</a><a href="#shot">Screenshot</a><a href="#audit">Site audit</a><a href="#measures">What it measures</a><a href="#advice">AI advice</a><a href="#lookup">Site lookup</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
+  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#fetch">Fetch a page</a><a href="#shot">Screenshot</a><a href="#audit">Site audit</a><a href="#measures">What it measures</a><a href="#advice">AI advice</a><a href="#lookup">Site lookup</a><a href="#chat">ChatGPT</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
 </nav>
 
 <h2 id="base">Base URL</h2>
@@ -315,14 +315,31 @@
 <p>Returns the last run, or <code>{ "run": null }</code> before the first check. A run has <code>id</code>, <code>started</code>, <code>finished</code> (null while running), <code>counts: { ok, broken, pending }</code>, and <code>handlers</code> containing each handler's verdict, reason, and both sides' job ids and outcomes.</p>
 <p class="note">The hub starts a check 60 seconds after it starts (<code>HANDLER_CHECK_START_DELAY_MS</code>), then every 24 hours by default, skipping a tick while a check is still running. Set <code>HANDLER_CHECK_INTERVAL_MS</code> to change the interval, or <code>0</code> to disable both. Tests disable this timer. The library comes from <code>HANDLERS_DIR</code> (default <code>&lt;repo&gt;/handlers</code>); a missing library loads as zero handlers. Health and check runs are held in memory and cleared on redeploy.</p>
 
+<h2 id="chat">Chat with web ChatGPT</h2>
+<p><span class="ep">POST</span><span class="path">/api/chat</span></p>
+<p>Routes prompts to an active web ChatGPT session in a worker PC's browser (via the Local Worker Chrome extension), captures the live generated answer, and returns it as an API response.</p>
+<pre><code>curl -X POST https://YOUR-SERVICE/api/chat \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Malaysia Top News today","wait":60}'</code></pre>
+<table>
+  <tr><th>Field</th><th>Meaning</th></tr>
+  <tr><td><code>prompt</code></td><td>The question or prompt to send to ChatGPT. Required.</td></tr>
+  <tr><td><code>model</code></td><td>Optional model selection (default <code>"auto"</code>).</td></tr>
+  <tr><td><code>wait</code></td><td>Seconds to hold the request open for the result, up to 900. Default: timeout plus 30 s. <code>0</code> returns <code>202</code> at once.</td></tr>
+  <tr><td><code>timeoutMs</code></td><td>Job deadline, 10000 to 600000. Default 180000 (3 minutes).</td></tr>
+  <tr><td><code>worker</code></td><td>Pin the job to one worker by name.</td></tr>
+</table>
+<p><code>200</code> with <code>{ "job": { "status": "done", "result": { "answer": "...", "tookMs": ... } } }</code> when finished within <code>wait</code>.</p>
+
 <h2 id="get">Get, cancel and list jobs</h2>
 <h3><span class="ep">GET</span><span class="path">/api/scan/{id}?wait=60</span></h3>
-<p><code>/api/jobs/{id}</code>, <code>/api/fetch/{id}</code>, <code>/api/shot/{id}</code>, <code>/api/audit/{id}</code> and <code>/api/lookup/{id}</code> also retrieve jobs.</p>
+<p><code>/api/jobs/{id}</code>, <code>/api/fetch/{id}</code>, <code>/api/shot/{id}</code>, <code>/api/audit/{id}</code>, <code>/api/lookup/{id}</code> and <code>/api/chat/{id}</code> also retrieve jobs.</p>
 <p>Returns the job. <code>wait</code> holds the request until it finishes, up to 900 seconds. <code>404</code> for an unknown id.</p>
 <h3><span class="ep">DELETE</span><span class="path">/api/scan/{id}</span></h3>
-<p>Cancels the job. <code>/api/jobs/{id}</code>, <code>/api/fetch/{id}</code>, <code>/api/shot/{id}</code>, <code>/api/audit/{id}</code> and <code>/api/lookup/{id}</code> also accept DELETE. <code>409</code> if it has already finished.</p>
+<p>Cancels the job. <code>/api/jobs/{id}</code>, <code>/api/fetch/{id}</code>, <code>/api/shot/{id}</code>, <code>/api/audit/{id}</code>, <code>/api/lookup/{id}</code> and <code>/api/chat/{id}</code> also accept DELETE. <code>409</code> if it has already finished.</p>
 <h3><span class="ep">GET</span><span class="path">/api/scans?status=running</span></h3>
-<p>Recent jobs, up to 200, without results. <code>status</code> is optional: <code>pending</code>, <code>running</code>, <code>done</code> or <code>failed</code>. <code>type</code> is optional: <code>gmap.scan</code>, <code>web.fetch</code>, <code>web.shot</code>, <code>site.audit</code> or <code>site.lookup</code>.</p>
+<p>Recent jobs, up to 200, without results. <code>status</code> is optional: <code>pending</code>, <code>running</code>, <code>done</code> or <code>failed</code>. <code>type</code> is optional: <code>gmap.scan</code>, <code>web.fetch</code>, <code>web.shot</code>, <code>site.audit</code>, <code>site.lookup</code> or <code>chat.ask</code>.</p>
 
 <h2 id="other">Other routes</h2>
 <table>
@@ -336,7 +353,7 @@
 <h2 id="job">Job object</h2>
 <pre><code>{
   "id": "857ccca76cfe",
-  "type": "gmap.scan",       // gmap.scan | web.fetch | web.shot | site.audit | site.lookup
+  "type": "gmap.scan",       // gmap.scan | web.fetch | web.shot | site.audit | site.lookup | chat.ask
   "status": "done",          // pending | running | done | failed
   "worker": "pc-desktop-camhl16",
   "attempts": 1,

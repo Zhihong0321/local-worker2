@@ -24,6 +24,9 @@ caller ──POST /api/scan──▶  service (Railway)  ◀──GET /api/jobs/
 | `package.mjs` | Builds `LocalGmapWorker.zip` with a ready `worker.env` |
 | `worker/worker.ps1` | The PC worker, Windows PowerShell 5.1, nothing to install |
 | `worker/fetch.py` | One page fetch: curl_cffi (Chrome's TLS fingerprint) + Scrapling's parser and markdown, no browser |
+| `worker/chat.mjs` | Forwards `chat.ask` jobs to the local ChatGPT bridge |
+| `worker/chat_bridge.mjs` | Local WebSocket bridge server (port 8765) between worker and Chrome extension |
+| `worker/extension/` | Chrome extension (Manifest V3) bridging web ChatGPT directly to worker |
 | `worker/*.cmd` | Start, enable / disable autostart |
 | `test/server.test.mjs` | Round trip over HTTP with a pretend worker (`npm test`) |
 
@@ -65,6 +68,24 @@ shows each handler's health; the hub checks every handler's canary keywords
 60 s after it starts (`HANDLER_CHECK_START_DELAY_MS`) and then daily
 (`HANDLER_CHECK_INTERVAL_MS`, `0` turns both off). Full routes on the API page
 (`/`, `docs/index.html`).
+
+## ChatGPT Web Bridge (`chat.ask`)
+
+`POST /api/chat {"prompt":"Malaysia Top News today","wait":60}` routes questions
+to an active web ChatGPT session in a worker PC's browser and returns the live generated
+answer.
+
+### How it works:
+1. The PC worker runs a zero-dependency WebSocket bridge server (`chat_bridge.mjs`) on `127.0.0.1:8765`.
+2. The user loads the Chrome extension from `worker/extension/` (via `chrome://extensions` -> "Load unpacked").
+3. When `POST /api/chat` is called on the Hub, the worker receives the job, forwards it over WebSocket to the extension, which types the prompt into ChatGPT (`chatgpt.com`), clicks send, extracts the generated response stream, and returns it back through the Hub as the API answer.
+
+```bash
+curl -X POST https://<service>/api/chat \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Malaysia Top News today","wait":60}'
+```
 
 ## Run a test hub and worker on Windows
 

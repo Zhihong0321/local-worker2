@@ -880,6 +880,45 @@ def invoke_lookup(job):
             file.unlink(missing_ok=True)
 
 
+# ----------------------------------------------------------------- chat bridge
+
+ChatBridge = None
+
+# Starts the local ChatGPT bridge server on port 8765 if not already running.
+def start_chat_bridge():
+    global ChatBridge
+    if ChatBridge is not None and ChatBridge.poll() is None:
+        return
+    bridge_script = SHARED / 'chat_bridge.mjs'
+    if not NodeReady or not bridge_script.exists():
+        return
+    try:
+        ChatBridge = subprocess.Popen([str(NodeExe), str(bridge_script)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+# One chat.ask job, by chat.mjs on the portable Node, with the payload in a file.
+def invoke_chat(job):
+    p = job.get('payload') or {}
+    file = DATA / f"chat-{job['id']}.json"
+    spec = {'id': job['id'], 'prompt': p.get('prompt'), 'model': p.get('model'), 'timeoutMs': to_int(job.get('timeoutMs'))}
+    write_text(file, json.dumps(spec, separators=(',', ':')))
+    try:
+        timeout_ms = to_int(job.get('timeoutMs'))
+        line, err = run_job_script([str(NodeExe), str(SHARED / 'chat.mjs'), str(file)], timeout_ms + 10000,
+                                   timeout_message=f'chat took longer than {timeout_ms // 1000} s')
+        if not line:
+            raise RuntimeError(f'chat.mjs answered nothing: {err}')
+        r = json.loads(line)
+        if not r.get('ok'):
+            raise RuntimeError(str(r.get('error')))
+        r['result']['worker'] = Name
+        return r['result']
+    finally:
+        file.unlink(missing_ok=True)
+
+
 # ------------------------------------------------------------------ results
 
 # Post a result, retrying the service for a few minutes. If it never takes it,
@@ -964,6 +1003,7 @@ def main():
             if FetchReady and not PdfReady and time.time() >= NextPdfSetup:
                 PdfReady = install_pdf_reader()
                 NextPdfSetup = time.time() + 3600
+            start_chat_bridge()
             resting = time.time() < rest_until
             Types = ','.join(t for t in (
                 'gmap.scan' if not resting else None,
@@ -971,6 +1011,7 @@ def main():
                 'site.audit' if FetchReady else None,
                 'site.lookup' if NodeReady else None,
                 'web.shot' if NodeReady and ShotExe else None,
+                'chat.ask' if NodeReady else None,
             ) if t)
             if not Types:
                 time.sleep(min(25, max(1, int(rest_until - time.time()))))
@@ -1036,6 +1077,18 @@ def main():
                 except Exception as e:
                     log(f"job {job['id']} failed: {e}")
                     send_result(job['id'], job.get('payload'), False, None, str(e), 0, 'web.fetch')
+                finally:
+                    JobId = None
+                continue
+            if job.get('type') == 'chat.ask':
+                log(f"job {job['id']}: chat {payload.get('prompt')}")
+                try:
+                    result = invoke_chat(job)
+                    log(f"job {job['id']}: chat finished in {result.get('tookMs')} ms")
+                    send_result(job['id'], job.get('payload'), True, result, '', 0, 'chat.ask')
+                except Exception as e:
+                    log(f"job {job['id']} failed: {e}")
+                    send_result(job['id'], job.get('payload'), False, None, str(e), 0, 'chat.ask')
                 finally:
                     JobId = None
                 continue

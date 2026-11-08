@@ -641,7 +641,8 @@ function Invoke-Shot($Job) {
   [IO.File]::WriteAllText($file, ($spec | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
   $proc = $null
   try {
-    $psi = New-Object Diagnostics.ProcessStartInfo $NodeExe
+    $nodeCmd = if ($NodeExe -and (Test-Path -LiteralPath $NodeExe)) { $NodeExe } else { 'node' }
+    $psi = New-Object Diagnostics.ProcessStartInfo $nodeCmd
     $psi.Arguments = (@((Join-Path $PSScriptRoot 'shot.mjs'), $file) | ForEach-Object { Quote-NodeArgument $_ }) -join ' '
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
@@ -799,6 +800,61 @@ function Invoke-Lookup($Job) {
   }
 }
 
+# ----------------------------------------------------------------- chat bridge
+
+$script:ChatBridge = $null
+
+# Starts the local ChatGPT bridge server on port 8765 if not already running.
+function Start-ChatBridge {
+  if ($script:ChatBridge -and -not $script:ChatBridge.HasExited) { return }
+  $bridgeScript = Join-Path $PSScriptRoot 'chat_bridge.mjs'
+  if (-not (Test-Path -LiteralPath $bridgeScript) -or -not $script:NodeReady) { return }
+  try {
+    $nodeCmd = if ($NodeExe -and (Test-Path -LiteralPath $NodeExe)) { $NodeExe } else { 'node' }
+    $psi = New-Object Diagnostics.ProcessStartInfo $nodeCmd
+    $psi.Arguments = (Quote-NodeArgument $bridgeScript)
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $script:ChatBridge = [Diagnostics.Process]::Start($psi)
+  } catch { }
+}
+
+# One chat.ask job, by chat.mjs on the portable Node, with the payload in a file.
+function Invoke-Chat($Job) {
+  $p = $Job.payload
+  $file = Join-Path $Data "chat-$($Job.id).json"
+  $spec = @{ id = $Job.id; prompt = $p.prompt; model = $p.model; timeoutMs = [int]$Job.timeoutMs }
+  [IO.File]::WriteAllText($file, ($spec | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
+  $proc = $null
+  try {
+    $nodeCmd = if ($NodeExe -and (Test-Path -LiteralPath $NodeExe)) { $NodeExe } else { 'node' }
+    $psi = New-Object Diagnostics.ProcessStartInfo $nodeCmd
+    $psi.Arguments = (@((Join-Path $PSScriptRoot 'chat.mjs'), $file) | ForEach-Object { Quote-NodeArgument $_ }) -join ' '
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $proc = [Diagnostics.Process]::Start($psi)
+    $out = $proc.StandardOutput.ReadToEndAsync()
+    $err = $proc.StandardError.ReadToEndAsync()
+    if (-not $proc.WaitForExit([int]$Job.timeoutMs + 10000)) {
+      try { $proc.Kill() } catch { }
+      throw "chat took longer than $([int]($Job.timeoutMs / 1000)) s"
+    }
+    $proc.WaitForExit()
+    $line = @($out.Result.Trim() -split "`r?`n")[-1]
+    if (-not $line) { throw "chat.mjs answered nothing: $($err.Result.Trim())" }
+    $r = $line | ConvertFrom-Json
+    if (-not $r.ok) { throw [string]$r.error }
+    $r.result | Add-Member worker $Name
+    return $r.result
+  } finally {
+    if ($proc) { $proc.Dispose() }
+    Remove-Item $file -Force -ErrorAction SilentlyContinue
+  }
+}
+
 # ------------------------------------------------------------------ results
 
 # Post a result, retrying the service for a few minutes. If it never takes it,
@@ -871,6 +927,7 @@ while ($true) {
       $script:PdfReady = Install-PdfReader
       $script:NextPdfSetup = (Get-Date).AddHours(1)
     }
+    Start-ChatBridge
     $resting = (Get-Date) -lt $restUntil
     # Emit only ready types; empty subexpressions in an array stop PS 5.1's pipeline early.
     $script:Types = (@(
@@ -879,6 +936,7 @@ while ($true) {
       if ($script:FetchReady) { 'site.audit' }
       if ($script:NodeReady) { 'site.lookup' }
       if ($script:NodeReady -and $script:ShotExe) { 'web.shot' }
+      if ($script:NodeReady) { 'chat.ask' }
     )) -join ','
     if (-not $script:Types) { Start-Sleep -Seconds ([Math]::Min(25, [Math]::Max(1, [int]($restUntil - (Get-Date)).TotalSeconds))); continue }
     $r = Invoke-Hub 'GET' ("/api/jobs/next?worker=$([uri]::EscapeDataString($Name))&types=$($script:Types)&wait=25") $null 45
@@ -941,6 +999,18 @@ while ($true) {
       } catch {
         Log "job $($job.id) failed: $($_.Exception.Message)"
         Send-Result $job.id $job.payload $false $null ([string]$_.Exception.Message) 0 'web.fetch'
+      } finally { $script:JobId = $null }
+      continue
+    }
+    if ($job.type -eq 'chat.ask') {
+      Log "job $($job.id): chat $($job.payload.prompt)"
+      try {
+        $result = Invoke-Chat $job
+        Log "job $($job.id): chat finished in $($result.tookMs) ms"
+        Send-Result $job.id $job.payload $true $result '' 0 'chat.ask'
+      } catch {
+        Log "job $($job.id) failed: $($_.Exception.Message)"
+        Send-Result $job.id $job.payload $false $null ([string]$_.Exception.Message) 0 'chat.ask'
       } finally { $script:JobId = $null }
       continue
     }

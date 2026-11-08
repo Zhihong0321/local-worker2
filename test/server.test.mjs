@@ -645,3 +645,22 @@ test('AI advice answers 503 when no model is set up on the service', async () =>
   assert.equal(r.status, 503);
   assert.match((await r.json()).error, /AGY_URL/);
 });
+
+test('chat round trip: only a worker asking for chat.ask gets it', async () => {
+  const posted = call('/api/chat', api, { method: 'POST', body: JSON.stringify({ prompt: 'What is 2+2?', worker: 'pc-chat' }) });
+  await new Promise((r) => setTimeout(r, 100));
+  const scanOnly = await call('/api/jobs/next?worker=pc-chat&types=gmap.scan&wait=0', wk);
+  if (scanOnly.status === 200) assert.notEqual((await scanOnly.json()).job.type, 'chat.ask');
+  const next = await call('/api/jobs/next?worker=pc-chat&types=chat.ask&wait=1', wk);
+  assert.equal(next.status, 200);
+  const { job } = await next.json();
+  assert.equal(job.type, 'chat.ask');
+  assert.equal(job.payload.prompt, 'What is 2+2?');
+  const result = { answer: '4' };
+  const done = await call(`/api/jobs/${job.id}/result`, wk, { method: 'POST', body: JSON.stringify({ worker: 'pc-chat', ok: true, result }) });
+  assert.equal(done.status, 200);
+  const answer = await (await posted).json();
+  assert.equal(answer.job.status, 'done');
+  assert.equal(answer.job.result.answer, '4');
+  assert.equal((await (await call(`/api/chat/${job.id}`, api)).json()).job.status, 'done');
+});

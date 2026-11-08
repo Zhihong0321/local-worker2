@@ -28,7 +28,8 @@ const FETCH = 'web.fetch';
 const AUDIT = 'site.audit';
 const LOOKUP = 'site.lookup';
 const SHOT = 'web.shot';
-const JOB_TYPES = [SCAN, FETCH, AUDIT, LOOKUP, SHOT];
+const CHAT = 'chat.ask';
+const JOB_TYPES = [SCAN, FETCH, AUDIT, LOOKUP, SHOT, CHAT];
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 const MIN_TIMEOUT_MS = 120_000;
@@ -55,6 +56,10 @@ const LOOKUP_DEFAULT_TIMEOUT_MS = 150_000;
 const LOOKUP_MIN_TIMEOUT_MS = 10_000;
 const LOOKUP_MAX_TIMEOUT_MS = 300_000;
 const LOOKUP_LEASE_GRACE_MS = 30_000;
+const CHAT_DEFAULT_TIMEOUT_MS = 180_000;
+const CHAT_MIN_TIMEOUT_MS = 10_000;
+const CHAT_MAX_TIMEOUT_MS = 600_000;
+const CHAT_LEASE_GRACE_MS = 30_000;
 // Canaries wait behind all earlier checks for their host, without a caller on the line.
 const LOOKUP_CHECK_QUEUE_TIMEOUT_MS = 24 * 3_600_000;
 const HANDLER_CHECK_INTERVAL_MS = Number(process.env.HANDLER_CHECK_INTERVAL_MS ?? 24 * 3_600_000);
@@ -427,6 +432,20 @@ function readAudit(body) {
   return { payload, timeoutMs };
 }
 
+function readChat(body) {
+  const prompt = str(body.prompt ?? body.question ?? body.message).trim();
+  if (!prompt) return { error: 'prompt is required' };
+  if (prompt.length > 100_000) return { error: 'prompt is at most 100000 characters' };
+  const model = body.model == null ? 'auto' : str(body.model).trim();
+  const timeoutMs = body.timeoutMs == null ? CHAT_DEFAULT_TIMEOUT_MS : Number(body.timeoutMs);
+  if (!Number.isFinite(timeoutMs) || timeoutMs < CHAT_MIN_TIMEOUT_MS || timeoutMs > CHAT_MAX_TIMEOUT_MS) {
+    return { error: `timeoutMs is from ${CHAT_MIN_TIMEOUT_MS} to ${CHAT_MAX_TIMEOUT_MS}` };
+  }
+  const payload = { prompt, model };
+  if (str(body.worker).trim()) payload.worker = str(body.worker).trim();
+  return { payload, timeoutMs };
+}
+
 /** Adds a job to the queue without offering it to a waiting worker. */
 function add(payload, timeoutMs, id = newId(), type = SCAN) {
   const job = {
@@ -609,7 +628,7 @@ async function route(req, res) {
       if (!body.payload || typeof body.payload !== 'object') { json(res, 404, { error: 'no such job' }); return; }
       // Not create(): a waiting worker must not be handed a job this one is about to finish.
       const type = JOB_TYPES.includes(body.type) ? body.type : SCAN;
-      job = add({ ...body.payload }, type === FETCH ? FETCH_DEFAULT_TIMEOUT_MS : type === SHOT ? SHOT_DEFAULT_TIMEOUT_MS : type === AUDIT ? AUDIT_DEFAULT_TIMEOUT_MS : type === LOOKUP ? LOOKUP_DEFAULT_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, id, type);
+      job = add({ ...body.payload }, type === FETCH ? FETCH_DEFAULT_TIMEOUT_MS : type === SHOT ? SHOT_DEFAULT_TIMEOUT_MS : type === AUDIT ? AUDIT_DEFAULT_TIMEOUT_MS : type === LOOKUP ? LOOKUP_DEFAULT_TIMEOUT_MS : type === CHAT ? CHAT_DEFAULT_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, id, type);
       lease(job, worker);
     }
     if (job.status === 'done' || job.status === 'failed') { json(res, 409, { error: `job is already ${job.status}` }); return; }
@@ -722,6 +741,19 @@ async function route(req, res) {
     return;
   }
 
+  if (method === 'POST' && p === '/api/chat') {
+    const body = await readJson(req);
+    const chat = readChat(body);
+    if (chat.error) { json(res, 400, { error: chat.error }); return; }
+    const job = create(chat.payload, chat.timeoutMs, CHAT);
+    const waitSec = Number(body.wait ?? q.get('wait') ?? NaN);
+    const waitMs = Number.isFinite(waitSec) ? waitSec * 1000 : chat.timeoutMs + CHAT_LEASE_GRACE_MS;
+    const waited = await waitFor(job, Math.min(MAX_CALLER_WAIT_MS, waitMs), res);
+    if (res.destroyed) return;
+    json(res, waited.status === 'done' || waited.status === 'failed' ? 200 : 202, { job: view(waited) });
+    return;
+  }
+
   const adviceFor = /^\/api\/audit\/([a-f0-9]{12})\/advice$/.exec(p);
   if (adviceFor && (method === 'POST' || method === 'GET')) {
     const body = method === 'POST' ? await readJson(req) : {};
@@ -747,7 +779,7 @@ async function route(req, res) {
     return;
   }
 
-  const jobId = /^\/api\/(?:jobs|scan|fetch|shot|audit|lookup)\/([a-f0-9]{12})$/.exec(p);
+  const jobId = /^\/api\/(?:jobs|scan|fetch|shot|audit|lookup|chat)\/([a-f0-9]{12})$/.exec(p);
   if (jobId && method === 'GET') {
     const job = jobs.get(jobId[1]);
     if (!job) { json(res, 404, { error: 'no such job' }); return; }

@@ -22,6 +22,16 @@ const FILES = [
   ['audit_schema.py', 'app/audit_schema.py'],
   ['run-handler.mjs', 'app/run-handler.mjs'],
   ['shot.mjs', 'app/shot.mjs'],
+  ['chat.mjs', 'app/chat.mjs'],
+  ['chat_bridge.mjs', 'app/chat_bridge.mjs'],
+  ['extension/manifest.json', 'extension/manifest.json'],
+  ['extension/background.js', 'extension/background.js'],
+  ['extension/content.js', 'extension/content.js'],
+  ['extension/popup.html', 'extension/popup.html'],
+  ['extension/popup.js', 'extension/popup.js'],
+  ['extension/icons/icon16.png', 'extension/icons/icon16.png'],
+  ['extension/icons/icon48.png', 'extension/icons/icon48.png'],
+  ['extension/icons/icon128.png', 'extension/icons/icon128.png'],
 ];
 
 const DOS_EPOCH = { time: 0, date: (2026 - 1980) << 9 | 1 << 5 | 1 };
