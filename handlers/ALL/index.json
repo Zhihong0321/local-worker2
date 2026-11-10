@@ -81,8 +81,8 @@
       "host": "web.archive.org",
       "task": "ALL-wayback",
       "want": "w1",
-      "question": "How long has this website existed in the Internet Archive, and what did its home page say in earlier years?",
-      "why_it_matters": "Old snapshots show when the site first appeared and let claims such as staff numbers, project counts or awards be checked against what the company said before.",
+      "question": "How long has this website existed in the Internet Archive, and in which years was it captured?",
+      "why_it_matters": "The first capture shows how old the website really is, and gaps in the captures show years when it was down or not worth archiving. Each capture links to the archived page for anyone who wants to look.",
       "source_name": "Internet Archive Wayback Machine",
       "source_url": "https://web.archive.org/",
       "tier": 1,
@@ -98,7 +98,7 @@
       "tier4": null,
       "browser_steps": null,
       "verified_at": null,
-      "version": "ce0ba6fe168f"
+      "version": "9dbead7c7e48"
     },
     {
       "id": "ALL-youtube/w1",

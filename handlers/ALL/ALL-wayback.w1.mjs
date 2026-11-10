@@ -1,6 +1,8 @@
 // Global handler: Wayback Machine. Input is the company's website domain.
-// Lists which years the home page was archived and keeps the opening text of a few old snapshots, so a later step
-// can compare what the company claimed then with what it claims now. This handler only gathers; it compares nothing.
+// Lists which years the home page was archived: the first and the latest successful capture, and every year in
+// between, each with a link to the capture. It reads the archive's capture index only. It does not read the archived
+// pages: the archive refuses uncached page reads with HTTP 429 (decided with the owner, 2026-11-11).
+// Gathers only; it compares nothing.
 
 export const meta = {
   task: 'ALL-wayback',
@@ -9,17 +11,15 @@ export const meta = {
   method: 'json_api',
   input: 'domain',
   host: 'web.archive.org',
-  question: 'How long has this website existed in the Internet Archive, and what did its home page say in earlier years?',
-  why_it_matters: 'Old snapshots show when the site first appeared and let claims such as staff numbers, project counts or awards be checked against what the company said before.',
+  question: 'How long has this website existed in the Internet Archive, and in which years was it captured?',
+  why_it_matters: 'The first capture shows how old the website really is, and gaps in the captures show years when it was down or not worth archiving. Each capture links to the archived page for anyone who wants to look.',
   source_name: 'Internet Archive Wayback Machine',
   source_url: 'https://web.archive.org/',
-  fields: ['first_snapshot', 'last_snapshot', 'years_archived', 'snapshots'],
+  fields: ['first_capture', 'latest_capture', 'years_captured', 'captures'],
   canary: { found: 'example.com', not_found: 'canary-no-such-domain.invalid' },
 };
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
-const TEXT_CHARS = 1500;
-const BUDGET_MS = 70_000; // a lookup job is held for 150 s; stay inside it even with one retry
 
 function hostOf(input) {
   let s = String(input ?? '').trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').split(/[/?#]/)[0].replace(/:\d+$/, '').replace(/^www\./, '').replace(/\.$/, '');
@@ -31,83 +31,68 @@ function result(status, reason, records, excerpt, sourceUrl) {
   return { status, reason, records, source_url: sourceUrl, excerpt: String(excerpt ?? '') };
 }
 
-// The archive answers HTTP 429 when asked too fast; one patient retry (it says how long to wait) before giving up.
-async function get(url, timeoutMs, retried = false) {
+async function cdx(name, extra) {
   try {
-    const res = await fetch(url, { headers: { 'user-agent': UA, accept: '*/*' }, signal: AbortSignal.timeout(timeoutMs), redirect: 'follow' });
-    if (res.status === 429 && !retried) {
-      const wait = Math.min(15, Math.max(5, Number(res.headers.get('retry-after')) || 8));
-      await new Promise((r) => setTimeout(r, wait * 1000));
-      return get(url, timeoutMs, true);
-    }
+    const res = await fetch(`https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(name)}&output=json&fl=timestamp,original,statuscode&filter=statuscode:200${extra}`, { headers: { 'user-agent': UA, accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
-    return { ok: true, text: await res.text() };
+    let rows;
+    try { rows = JSON.parse(await res.text()); } catch { return { ok: false, error: 'answer was not JSON' }; }
+    return { ok: true, rows: Array.isArray(rows) ? rows.slice(1).filter((r) => Array.isArray(r) && /^\d{14}$/.test(r[0])) : [] };
   } catch (err) { return { ok: false, error: String(err?.name === 'TimeoutError' ? 'timeout' : err?.message ?? err).slice(0, 120) }; }
 }
 
-const decode = (s) => s.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#(\d+);/g, (m, n) => (Number(n) < 0x110000 ? String.fromCodePoint(Number(n)) : m));
-
-function pageText(html) {
-  const title = decode((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '').replace(/\s+/g, ' ').trim());
-  const desc = decode((html.match(/<meta[^>]+name=["']description["'][^>]*content=["']([^"']*)["']/i)?.[1] ?? html.match(/<meta[^>]+content=["']([^"']*)["'][^>]*name=["']description["']/i)?.[1] ?? '').replace(/\s+/g, ' ').trim());
-  const body = decode(html.replace(/<!--[\s\S]*?-->/g, ' ').replace(/<(script|style|noscript|svg|head)\b[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
-  return { title, description: desc, text: body.slice(0, TEXT_CHARS) };
-}
-
 const stamp = (ts) => `${ts.slice(0, 4)}-${ts.slice(4, 6)}-${ts.slice(6, 8)}`;
+const link = (r) => `https://web.archive.org/web/${r[0]}/${r[1]}`;
 
 export default async function lookup(keyword) {
   const host = hostOf(keyword);
   const source = host ? `https://web.archive.org/web/*/${host}` : 'https://web.archive.org/';
   if (!host) return result('couldnt_check', 'keyword_not_a_domain', [], `The keyword "${String(keyword ?? '').slice(0, 80)}" is not a domain name, so the Wayback Machine was not asked.`, source);
-  const started = Date.now();
   try {
-    // One snapshot per year, successful captures only. The bare domain first, then www.
+    // One capture per year, successful captures only. The bare domain first, then www.
     let yearly = null;
     let usedHost = host;
     const errors = [];
     for (const name of [host, `www.${host}`]) {
-      const res = await get(`https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(name)}&output=json&fl=timestamp,original,statuscode&filter=statuscode:200&collapse=timestamp:4`, 30_000);
+      const res = await cdx(name, '&collapse=timestamp:4');
       if (!res.ok) { errors.push(`${name}: ${res.error}`); continue; }
-      let rows;
-      try { rows = JSON.parse(res.text); } catch { errors.push(`${name}: answer was not JSON`); continue; }
-      const data = Array.isArray(rows) ? rows.slice(1).filter((r) => Array.isArray(r) && /^\d{14}$/.test(r[0])) : [];
-      if (data.length) { yearly = data; usedHost = name; break; }
+      if (res.rows.length) { yearly = res.rows; usedHost = name; break; }
     }
     if (!yearly) {
       if (errors.length) return result('couldnt_check', 'archive_unreachable', [], `The Wayback Machine could not be read for ${host} (${errors.join('; ')}). This says nothing about the company.`, source);
       return result('not_found', 'never_archived', [], `The Wayback Machine holds no successful capture of ${host} or www.${host}.`, source);
     }
 
-    const years = yearly.map((r) => r[0].slice(0, 4));
+    // The latest capture of all (the yearly list only shows the first capture of each year). If this call fails the
+    // newest yearly row stands in for it.
+    const last = await cdx(usedHost, '&limit=-1');
+    const latest = last.ok && last.rows.length ? last.rows[last.rows.length - 1] : yearly[yearly.length - 1];
+
     const first = yearly[0];
-    // Which snapshots to read: the oldest, about three years back, about one year back.
-    const target = (yearsBack) => {
-      const want = new Date().getUTCFullYear() - yearsBack;
-      return [...yearly].sort((a, b) => Math.abs(Number(a[0].slice(0, 4)) - want) - Math.abs(Number(b[0].slice(0, 4)) - want))[0];
+    const years = yearly.map((r) => r[0].slice(0, 4));
+    const span = Number(latest[0].slice(0, 4)) - Number(first[0].slice(0, 4)) + 1;
+    const missing = [];
+    for (let y = Number(first[0].slice(0, 4)); y <= Number(latest[0].slice(0, 4)); y++) if (!years.includes(String(y))) missing.push(String(y));
+
+    const rec = {
+      domain: usedHost,
+      first_capture: stamp(first[0]),
+      first_capture_url: link(first),
+      latest_capture: stamp(latest[0]),
+      latest_capture_url: link(latest),
+      years_captured: years,
+      years_without_capture: missing,
+      captures: yearly.map((r) => ({ date: stamp(r[0]), url: link(r) })),
     };
-    const picks = [];
-    for (const row of [first, target(3), target(1)]) if (row && !picks.some((p) => p[0].slice(0, 4) === row[0].slice(0, 4))) picks.push(row);
-    picks.sort((a, b) => a[0].localeCompare(b[0]));
-
-    const snapshots = [];
-    for (const row of picks) {
-      const base = { timestamp: row[0], date: stamp(row[0]), url: `https://web.archive.org/web/${row[0]}/${row[1]}` };
-      if (Date.now() - started > BUDGET_MS) { snapshots.push({ ...base, error: 'skipped: time budget used up' }); continue; }
-      const page = await get(`https://web.archive.org/web/${row[0]}id_/${row[1]}`, 25_000);
-      if (!page.ok) { snapshots.push({ ...base, error: page.error }); continue; }
-      snapshots.push({ ...base, ...pageText(page.text) });
-    }
-
-    const rec = { domain: usedHost, first_snapshot: stamp(first[0]), last_snapshot_year: years[years.length - 1], years_archived: years, snapshots };
     const lines = [
-      `Internet Archive for ${usedHost}: first successful capture ${stamp(first[0])}; captured in ${years.length} different years (${years[0]} to ${years[years.length - 1]}).`,
+      `Internet Archive for ${usedHost}: first successful capture ${rec.first_capture}, latest ${rec.latest_capture}; captured in ${years.length} of the ${span} years from ${years[0]} to ${latest[0].slice(0, 4)}.`,
       `Years with a capture: ${years.join(', ')}`,
+      missing.length ? `Years in that span with no capture: ${missing.join(', ')}` : 'No year in that span is missing.',
+      `First capture: ${rec.first_capture_url}`,
+      `Latest capture: ${rec.latest_capture_url}`,
+      'Only the archive\'s capture list was read; the archived pages themselves were not.',
     ];
-    for (const s of snapshots) {
-      lines.push(s.error ? `Snapshot ${s.date} (${s.url}): could not be read (${s.error})`
-        : `Snapshot ${s.date} (${s.url})\n  Title: ${s.title || '(none)'}${s.description ? `\n  Description: ${s.description}` : ''}\n  Opening text: ${s.text || '(no text found)'}`);
-    }
+    if (!last.ok) lines.push(`The latest capture could not be confirmed (${last.error}); the newest year's first capture is shown instead.`);
     return result('found', null, [rec], lines.join('\n'), source);
   } catch (err) {
     return result('couldnt_check', 'handler_error', [], `The Wayback handler hit an error: ${String(err?.message ?? err).slice(0, 200)}`, source);
