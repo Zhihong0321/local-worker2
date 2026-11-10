@@ -297,6 +297,8 @@ function importLibrary({ probeDir, tasksFile, outDir, check }) {
   if (fs.existsSync(outDir)) {
     for (const rel of listFiles(outDir).sort()) {
       if (expected.has(rel)) continue;
+      // handlers/ALL/ holds the hand-written global handlers (scripts/build-global-index.mjs); not the probe's.
+      if (rel.startsWith('ALL/')) continue;
       if (rel.endsWith('.mjs')) {
         removed.push(rel);
         if (!check) fs.rmSync(path.join(outDir, rel));

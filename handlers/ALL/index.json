@@ -1,0 +1,129 @@
+{
+  "handlers": [
+    {
+      "id": "ALL-crtsh/w1",
+      "country": "ALL",
+      "host": "crt.sh",
+      "task": "ALL-crtsh",
+      "want": "w1",
+      "question": "Which subdomains and hostnames have ever had a public SSL certificate under this domain, and since when?",
+      "why_it_matters": "Certificate logs reveal forgotten sites, staging and test servers, old brands and how long the domain has been in real use, all without touching the company's systems.",
+      "source_name": "Certificate Transparency logs (crt.sh)",
+      "source_url": "https://crt.sh/",
+      "tier": 1,
+      "method": "json_api",
+      "pdf": false,
+      "input": "domain",
+      "scope": "global",
+      "canary": {
+        "found": "example.org",
+        "not_found": "canary-no-such-domain.invalid"
+      },
+      "file": "ALL/ALL-crtsh.w1.mjs",
+      "tier4": null,
+      "browser_steps": null,
+      "verified_at": null,
+      "version": "d309c2360b3c"
+    },
+    {
+      "id": "ALL-dns/w1",
+      "country": "ALL",
+      "host": "dns",
+      "task": "ALL-dns",
+      "want": "w1",
+      "question": "Which email provider, sending services and SaaS tools does this domain's DNS show, and how is its email authentication set up?",
+      "why_it_matters": "MX, SPF includes and verification TXT records show which mail provider and tools the company really uses, and how mature its email setup is.",
+      "source_name": "Public DNS records (MX, SPF, TXT, NS)",
+      "source_url": "https://www.iana.org/domains/root/db",
+      "tier": 1,
+      "method": "dns",
+      "pdf": false,
+      "input": "domain",
+      "scope": "global",
+      "canary": {
+        "found": "google.com",
+        "not_found": "canary-no-such-domain.invalid"
+      },
+      "file": "ALL/ALL-dns.w1.mjs",
+      "tier4": null,
+      "browser_steps": null,
+      "verified_at": null,
+      "version": "70118989accb"
+    },
+    {
+      "id": "ALL-ssl/w1",
+      "country": "ALL",
+      "host": "tls",
+      "task": "ALL-ssl",
+      "want": "w1",
+      "question": "Who issued the website's SSL certificate, when does it expire, and does it cover the domain?",
+      "why_it_matters": "An expired, soon-to-expire or mismatched certificate is a basic sign of how well a site is looked after, and the issuer and dates are hard facts.",
+      "source_name": "The website's TLS certificate (port 443)",
+      "source_url": "https://crt.sh/",
+      "tier": 1,
+      "method": "tls",
+      "pdf": false,
+      "input": "domain",
+      "scope": "global",
+      "canary": {
+        "found": "google.com",
+        "not_found": "canary-no-such-domain.invalid"
+      },
+      "file": "ALL/ALL-ssl.w1.mjs",
+      "tier4": null,
+      "browser_steps": null,
+      "verified_at": null,
+      "version": "7f34086e20a2"
+    },
+    {
+      "id": "ALL-wayback/w1",
+      "country": "ALL",
+      "host": "web.archive.org",
+      "task": "ALL-wayback",
+      "want": "w1",
+      "question": "How long has this website existed in the Internet Archive, and what did its home page say in earlier years?",
+      "why_it_matters": "Old snapshots show when the site first appeared and let claims such as staff numbers, project counts or awards be checked against what the company said before.",
+      "source_name": "Internet Archive Wayback Machine",
+      "source_url": "https://web.archive.org/",
+      "tier": 1,
+      "method": "json_api",
+      "pdf": false,
+      "input": "domain",
+      "scope": "global",
+      "canary": {
+        "found": "example.com",
+        "not_found": "canary-no-such-domain.invalid"
+      },
+      "file": "ALL/ALL-wayback.w1.mjs",
+      "tier4": null,
+      "browser_steps": null,
+      "verified_at": null,
+      "version": "cdaa5ab7cb9e"
+    },
+    {
+      "id": "ALL-youtube/w1",
+      "country": "ALL",
+      "host": "youtube.com",
+      "task": "ALL-youtube",
+      "want": "w1",
+      "question": "Does the website link a YouTube channel, and when did that channel last post and how often?",
+      "why_it_matters": "A channel the company advertises but stopped feeding long ago is a sign of abandoned marketing; an active one backs up claims of activity.",
+      "source_name": "YouTube channel feed (linked from the company website)",
+      "source_url": "https://www.youtube.com/",
+      "tier": 1,
+      "method": "html_rss",
+      "pdf": false,
+      "input": "domain",
+      "scope": "global",
+      "canary": {
+        "found": "nasa.gov",
+        "not_found": "canary-no-such-domain.invalid"
+      },
+      "file": "ALL/ALL-youtube.w1.mjs",
+      "tier4": null,
+      "browser_steps": null,
+      "verified_at": null,
+      "version": "f5a8f8b14d5e"
+    }
+  ]
+}

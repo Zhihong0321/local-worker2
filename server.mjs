@@ -118,13 +118,23 @@ const arr = (v) => (Array.isArray(v) ? v : []);
 const newId = () => crypto.randomBytes(6).toString('hex');
 
 function readHandlers() {
+  let entries = [];
   try {
     const index = JSON.parse(fs.readFileSync(path.join(HANDLERS_DIR, 'index.json'), 'utf8'));
-    return new Map(index.handlers.map(({ source, ...entry }) => [entry.id, entry]));
+    entries = index.handlers;
   } catch (err) {
-    if (err.code === 'ENOENT') return new Map();
-    throw err;
+    if (err.code !== 'ENOENT') throw err;
   }
+  // The global handlers (country "ALL": they take a website domain, not a company name) are written by hand and
+  // indexed in handlers/ALL/index.json, which scripts/import-handlers.mjs never touches. A missing or broken
+  // global index must not stop the country handlers, so it is logged and skipped.
+  try {
+    const global = JSON.parse(fs.readFileSync(path.join(HANDLERS_DIR, 'ALL', 'index.json'), 'utf8'));
+    entries = entries.concat((global.handlers ?? []).filter((h) => h && h.id && h.file));
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`global handler index not loaded: ${err.message}`);
+  }
+  return new Map(entries.map(({ source, ...entry }) => [entry.id, entry]));
 }
 
 function health(id) {
