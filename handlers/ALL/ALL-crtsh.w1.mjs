@@ -63,7 +63,7 @@ export default async function lookup(keyword) {
     const crt = await getJson(`https://crt.sh/?q=%25.${encodeURIComponent(host)}&output=json`, 3, 60_000);
     let failure = null;
     if (crt.ok && Array.isArray(crt.data)) {
-      rows = crt.data.map((e) => ({ names: String(e.name_value ?? e.common_name ?? '').split(/\s+/).filter(Boolean), from: iso(e.not_before), to: iso(e.not_after), issuer: String(e.issuer_name ?? '').match(/O=([^,]+)/)?.[1] ?? e.issuer_name ?? null }));
+      rows = crt.data.map((e) => ({ names: String(e.name_value ?? e.common_name ?? '').split(/\s+/).filter(Boolean), from: iso(e.not_before), to: iso(e.not_after), issuer: (String(e.issuer_name ?? '').match(/O=("[^"]*"|[^,]+)/)?.[1] ?? e.issuer_name ?? null)?.replace(/^"|"$/g, '') ?? null }));
     } else {
       failure = `crt.sh: ${crt.error ?? 'unexpected answer'}`;
       // Fallback: Cert Spotter's unauthenticated endpoint returns the first page only.

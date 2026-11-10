@@ -23,7 +23,7 @@
       "tier4": null,
       "browser_steps": null,
       "verified_at": null,
-      "version": "d309c2360b3c"
+      "version": "73e5dff3eaf2"
     },
     {
       "id": "ALL-dns/w1",
@@ -98,7 +98,7 @@
       "tier4": null,
       "browser_steps": null,
       "verified_at": null,
-      "version": "cdaa5ab7cb9e"
+      "version": "ce0ba6fe168f"
     },
     {
       "id": "ALL-youtube/w1",

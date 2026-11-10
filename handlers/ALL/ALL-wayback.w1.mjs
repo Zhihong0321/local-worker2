@@ -19,7 +19,7 @@ export const meta = {
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 const TEXT_CHARS = 1500;
-const BUDGET_MS = 110_000;
+const BUDGET_MS = 70_000; // a lookup job is held for 150 s; stay inside it even with one retry
 
 function hostOf(input) {
   let s = String(input ?? '').trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').split(/[/?#]/)[0].replace(/:\d+$/, '').replace(/^www\./, '').replace(/\.$/, '');
@@ -31,9 +31,15 @@ function result(status, reason, records, excerpt, sourceUrl) {
   return { status, reason, records, source_url: sourceUrl, excerpt: String(excerpt ?? '') };
 }
 
-async function get(url, timeoutMs) {
+// The archive answers HTTP 429 when asked too fast; one patient retry (it says how long to wait) before giving up.
+async function get(url, timeoutMs, retried = false) {
   try {
     const res = await fetch(url, { headers: { 'user-agent': UA, accept: '*/*' }, signal: AbortSignal.timeout(timeoutMs), redirect: 'follow' });
+    if (res.status === 429 && !retried) {
+      const wait = Math.min(15, Math.max(5, Number(res.headers.get('retry-after')) || 8));
+      await new Promise((r) => setTimeout(r, wait * 1000));
+      return get(url, timeoutMs, true);
+    }
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
     return { ok: true, text: await res.text() };
   } catch (err) { return { ok: false, error: String(err?.name === 'TimeoutError' ? 'timeout' : err?.message ?? err).slice(0, 120) }; }
