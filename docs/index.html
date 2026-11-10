@@ -50,7 +50,7 @@
 <h1>Local Gmap Worker API</h1>
 <p class="lead">Google Maps business scans, web page reads, page screenshots, SEO and GEO website audits, and web ChatGPT queries as an API. Jobs run on worker PCs and are posted back here.</p>
 <nav>
-  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#fetch">Fetch a page</a><a href="#shot">Screenshot</a><a href="#audit">Site audit</a><a href="#measures">What it measures</a><a href="#advice">AI advice</a><a href="#lookup">Site lookup</a><a href="#chat">ChatGPT</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
+  <a href="#auth">Auth</a><a href="#scan">Scan</a><a href="#fetch">Fetch a page</a><a href="#shot">Screenshot</a><a href="#audit">Site audit</a><a href="#measures">What it measures</a><a href="#advice">AI advice</a><a href="#lookup">Site lookup</a><a href="#chat">ChatGPT</a><a href="#ads">Ads research</a><a href="#get">Get</a><a href="#other">Other routes</a><a href="#job">Job object</a><a href="#behaviour">Behaviour</a><a href="#example">Example</a>
 </nav>
 
 <h2 id="base">Base URL</h2>
@@ -331,14 +331,34 @@
 </table>
 <p><code>200</code> with <code>{ "job": { "status": "done", "result": { "answer": "...", "tookMs": ... } } }</code> when finished within <code>wait</code>.</p>
 
+<h2 id="ads">Ads research</h2>
+<p><span class="ep">POST</span><span class="path">/api/ads</span></p>
+<p>Who advertises in one country and industry, read from Google's Ads Transparency Center and Meta's Ad Library by a worker PC on its own line. Google needs no browser; Meta's Ad Library is opened in the PC's Edge or Chrome, headless. A search takes about a minute. The result lists every advertiser found, joined across both libraries by name or website.</p>
+<pre><code>curl -X POST https://YOUR-SERVICE/api/ads   -H "Authorization: Bearer $API_KEY"   -H "Content-Type: application/json"   -d '{"country":"Malaysia","industry":"solar","wait":300}'</code></pre>
+<table>
+  <tr><th>Field</th><th>Meaning</th></tr>
+  <tr><td><code>country</code></td><td>A country name or 2-letter ISO code (<code>Malaysia</code>, <code>MY</code>). Required. <code>400</code> when it is neither.</td></tr>
+  <tr><td><code>industry</code></td><td>The industry, in a word or two. Required. The service turns it into the words searched: the industry itself, its usual synonyms (<code>solar</code> adds <code>solar panel</code>, <code>solar installation</code>, <code>photovoltaic</code> and, for Malaysia, <code>tenaga suria</code>), and for Google the country's company ending (<code>solar sdn bhd</code>). The words used come back in <code>terms</code>.</td></tr>
+  <tr><td><code>terms</code></td><td>Extra words to search, up to 10.</td></tr>
+  <tr><td><code>maxMetaAds</code></td><td>Meta ads to read, 10 to 500, shared across the first three words. Default 150.</td></tr>
+  <tr><td><code>maxGoogleAdvertisers</code></td><td>Google advertisers to read ads for, 1 to 100. Default 30.</td></tr>
+  <tr><td><code>activeOnly</code></td><td>Meta ads running now only. Default <code>true</code>.</td></tr>
+  <tr><td><code>googleRegion</code></td><td>Google's region id (2000 plus the ISO 3166 number) for a country the service has no id for.</td></tr>
+  <tr><td><code>wait</code></td><td>Seconds to hold the request open, up to 900. Default: timeout plus 60 s. <code>0</code> returns <code>202</code> at once.</td></tr>
+  <tr><td><code>timeoutMs</code></td><td>Job deadline, 60000 to 1800000. Default 600000. Whatever was read by the deadline is returned.</td></tr>
+  <tr><td><code>worker</code></td><td>Pin the job to one worker by name.</td></tr>
+</table>
+<p><code>200</code> with <code>{ "job": { "status": "done", "result": ... } }</code>. The result has <code>summary</code>, <code>notes</code>, <code>advertisers</code> (both libraries joined; <code>platforms</code>, <code>googleAds</code>, <code>metaAds</code>, <code>websites</code>), <code>google.advertisers</code> (ads shown in the country, formats, first and last shown, preview images) and <code>meta.advertisers</code> (ads seen, how long the longest has run, formats, platforms, calls to action, the three longest-running ads with their text and link).</p>
+<p class="note">A search that goes wrong is labelled, not dropped. <code>google.status</code> and <code>meta.status</code> are <code>ok</code>, <code>partial</code>, <code>empty</code>, <code>rate-limited</code>, <code>failed</code> or <code>no-browser</code> (the PC has no Edge or Chrome, so only Google is read), and <code>notes</code> says why. Meta's keyword search also returns ads that only mention the word, such as a marketplace listing a solar lamp: those advertisers stay in the list with <code>relevance: "unconfirmed"</code> and sort below the ones whose name or ad text is about the industry. Google answers HTTP 429 to a line that asks too often; the worker waits twice, then stops asking and returns Meta's side with <code>google.status: "rate-limited"</code>. Run the search again later.</p>
+
 <h2 id="get">Get, cancel and list jobs</h2>
 <h3><span class="ep">GET</span><span class="path">/api/scan/{id}?wait=60</span></h3>
-<p><code>/api/jobs/{id}</code>, <code>/api/fetch/{id}</code>, <code>/api/shot/{id}</code>, <code>/api/audit/{id}</code>, <code>/api/lookup/{id}</code> and <code>/api/chat/{id}</code> also retrieve jobs.</p>
+<p><code>/api/jobs/{id}</code>, <code>/api/fetch/{id}</code>, <code>/api/shot/{id}</code>, <code>/api/audit/{id}</code>, <code>/api/lookup/{id}</code>, <code>/api/chat/{id}</code> and <code>/api/ads/{id}</code> also retrieve jobs.</p>
 <p>Returns the job. <code>wait</code> holds the request until it finishes, up to 900 seconds. <code>404</code> for an unknown id.</p>
 <h3><span class="ep">DELETE</span><span class="path">/api/scan/{id}</span></h3>
-<p>Cancels the job. <code>/api/jobs/{id}</code>, <code>/api/fetch/{id}</code>, <code>/api/shot/{id}</code>, <code>/api/audit/{id}</code>, <code>/api/lookup/{id}</code> and <code>/api/chat/{id}</code> also accept DELETE. <code>409</code> if it has already finished.</p>
+<p>Cancels the job. <code>/api/jobs/{id}</code>, <code>/api/fetch/{id}</code>, <code>/api/shot/{id}</code>, <code>/api/audit/{id}</code>, <code>/api/lookup/{id}</code>, <code>/api/chat/{id}</code> and <code>/api/ads/{id}</code> also accept DELETE. <code>409</code> if it has already finished.</p>
 <h3><span class="ep">GET</span><span class="path">/api/scans?status=running</span></h3>
-<p>Recent jobs, up to 200, without results. <code>status</code> is optional: <code>pending</code>, <code>running</code>, <code>done</code> or <code>failed</code>. <code>type</code> is optional: <code>gmap.scan</code>, <code>web.fetch</code>, <code>web.shot</code>, <code>site.audit</code>, <code>site.lookup</code> or <code>chat.ask</code>.</p>
+<p>Recent jobs, up to 200, without results. <code>status</code> is optional: <code>pending</code>, <code>running</code>, <code>done</code> or <code>failed</code>. <code>type</code> is optional: <code>gmap.scan</code>, <code>web.fetch</code>, <code>web.shot</code>, <code>site.audit</code>, <code>site.lookup</code>, <code>chat.ask</code> or <code>ads.research</code>.</p>
 
 <h2 id="other">Other routes</h2>
 <table>
@@ -352,7 +372,7 @@
 <h2 id="job">Job object</h2>
 <pre><code>{
   "id": "857ccca76cfe",
-  "type": "gmap.scan",       // gmap.scan | web.fetch | web.shot | site.audit | site.lookup | chat.ask
+  "type": "gmap.scan",       // gmap.scan | web.fetch | web.shot | site.audit | site.lookup | chat.ask | ads.research
   "status": "done",          // pending | running | done | failed
   "worker": "pc-desktop-camhl16",
   "attempts": 1,

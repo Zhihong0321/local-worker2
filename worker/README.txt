@@ -41,6 +41,11 @@ HOW IT WORKS
   on a throwaway profile, and sends back a picture of it. A page that shows a
   bot check (a CAPTCHA or "Just a moment...") is reported, never answered.
 
+  An ads research job reads who advertises in one country and industry from
+  Google's Ads Transparency Center (no browser) and Meta's Ad Library (opened in the
+  same browser the screenshots use). If Google limits this line it is waited out,
+  not worked around; the result says so and still carries Meta's side.
+
   A web page job is one page, no browser. The worker refuses links to this
   PC's own network (router, other PCs, localhost).
 

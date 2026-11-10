@@ -919,6 +919,29 @@ def invoke_chat(job):
         file.unlink(missing_ok=True)
 
 
+# One ads.research job, by ads.mjs on the portable Node, with the payload in a file.
+# Google's Ads Transparency Center needs only Node; Meta's Ad Library also needs the
+# browser web.shot uses, and without one the job still returns Google's side, labelled.
+def invoke_ads(job):
+    p = job.get('payload') or {}
+    file = DATA / f"ads-{job['id']}.json"
+    spec = {'country': p.get('country'), 'countryName': p.get('countryName'), 'industry': p.get('industry'), 'terms': p.get('terms') or [], 'googleQueries': p.get('googleQueries') or [], 'googleRegion': p.get('googleRegion'), 'maxMetaAds': p.get('maxMetaAds'), 'maxMetaTerms': p.get('maxMetaTerms'), 'maxGoogleAdvertisers': p.get('maxGoogleAdvertisers'), 'maxGoogleDomains': p.get('maxGoogleDomains'), 'activeOnly': p.get('activeOnly'), 'timeoutMs': to_int(job.get('timeoutMs')), 'browser': ShotExe}
+    write_text(file, json.dumps(spec, separators=(',', ':')))
+    try:
+        timeout_ms = to_int(job.get('timeoutMs'))
+        line, err = run_job_script([str(NodeExe), str(SHARED / 'ads.mjs'), str(file)], timeout_ms + 10000,
+                                   timeout_message=f'the ads research took longer than {timeout_ms // 1000} s')
+        if not line:
+            raise RuntimeError(f'ads.mjs answered nothing: {err}')
+        r = json.loads(line)
+        if not r.get('ok'):
+            raise RuntimeError(str(r.get('error')))
+        r['result']['worker'] = Name
+        return r['result']
+    finally:
+        file.unlink(missing_ok=True)
+
+
 # ------------------------------------------------------------------ results
 
 # Post a result, retrying the service for a few minutes. If it never takes it,
@@ -1012,6 +1035,7 @@ def main():
                 'site.lookup' if NodeReady else None,
                 'web.shot' if NodeReady and ShotExe else None,
                 'chat.ask' if NodeReady else None,
+                'ads.research' if NodeReady else None,
             ) if t)
             if not Types:
                 time.sleep(min(25, max(1, int(rest_until - time.time()))))
@@ -1090,6 +1114,21 @@ def main():
                     log(f"job {job['id']} failed: {e}")
                     send_result(job['id'], job.get('payload'), False, None, str(e), 0, 'chat.ask')
                 finally:
+                    JobId = None
+                continue
+            if job.get('type') == 'ads.research':
+                log(f"job {job['id']}: ads {payload.get('industry')} in {payload.get('country')}")
+                stay_awake(True)
+                try:
+                    result = invoke_ads(job)
+                    summary = result.get('summary') or {}
+                    log(f"job {job['id']}: ads {summary.get('advertisers')} advertisers (Google {summary.get('googleAdvertisers')}, Meta {summary.get('metaAdvertisers')}) in {round((result.get('tookMs') or 0) / 1000)} s")
+                    send_result(job['id'], job.get('payload'), True, result, '', 0, 'ads.research')
+                except Exception as e:
+                    log(f"job {job['id']} failed: {e}")
+                    send_result(job['id'], job.get('payload'), False, None, str(e), 0, 'ads.research')
+                finally:
+                    stay_awake(False)
                     JobId = None
                 continue
             log(f"job {job['id']}: {payload.get('keyword')} in {payload.get('place')} (max {payload.get('max')})")

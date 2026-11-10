@@ -23,6 +23,7 @@ const FILES = [
   ['run-handler.mjs', 'app/run-handler.mjs'],
   ['shot.mjs', 'app/shot.mjs'],
   ['chat.mjs', 'app/chat.mjs'],
+  ['ads.mjs', 'app/ads.mjs'],
   ['chat_bridge.mjs', 'app/chat_bridge.mjs'],
   ['extension/manifest.json', 'extension/manifest.json'],
   ['extension/background.js', 'extension/background.js'],

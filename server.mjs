@@ -19,6 +19,7 @@ import { pathToFileURL } from 'node:url';
 import { strategy, DEFAULT_MAX, MAX_LIMIT } from './strategy.mjs';
 import { packageZip, PACKAGE_NAME } from './package.mjs';
 import { advise, adviceConfig } from './advise.mjs';
+import { country as adsCountry, searchTerms } from './adsearch.mjs';
 
 const API_KEY = process.env.API_KEY ?? '';
 const PORT = Number(process.env.PORT) || 8080;
@@ -29,7 +30,8 @@ const AUDIT = 'site.audit';
 const LOOKUP = 'site.lookup';
 const SHOT = 'web.shot';
 const CHAT = 'chat.ask';
-const JOB_TYPES = [SCAN, FETCH, AUDIT, LOOKUP, SHOT, CHAT];
+const ADS = 'ads.research';
+const JOB_TYPES = [SCAN, FETCH, AUDIT, LOOKUP, SHOT, CHAT, ADS];
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 const MIN_TIMEOUT_MS = 120_000;
@@ -60,6 +62,11 @@ const CHAT_DEFAULT_TIMEOUT_MS = 180_000;
 const CHAT_MIN_TIMEOUT_MS = 10_000;
 const CHAT_MAX_TIMEOUT_MS = 600_000;
 const CHAT_LEASE_GRACE_MS = 30_000;
+/** An ads research reads two ad libraries, one request at a time: minutes, like a scan. */
+const ADS_DEFAULT_TIMEOUT_MS = 600_000;
+const ADS_MIN_TIMEOUT_MS = 60_000;
+const ADS_MAX_TIMEOUT_MS = 1_800_000;
+const ADS_LEASE_GRACE_MS = 60_000;
 // Canaries wait behind all earlier checks for their host, without a caller on the line.
 const LOOKUP_CHECK_QUEUE_TIMEOUT_MS = 24 * 3_600_000;
 const HANDLER_CHECK_INTERVAL_MS = Number(process.env.HANDLER_CHECK_INTERVAL_MS ?? 24 * 3_600_000);
@@ -107,6 +114,7 @@ let checkRun = null;
 
 const now = () => new Date().toISOString();
 const str = (v) => (typeof v === 'string' ? v : v == null ? '' : String(v));
+const arr = (v) => (Array.isArray(v) ? v : []);
 const newId = () => crypto.randomBytes(6).toString('hex');
 
 function readHandlers() {
@@ -297,7 +305,7 @@ function lease(job, worker) {
   job.worker = worker;
   job.attempts++;
   job.startedAt = now();
-  job.leaseUntil = Date.now() + job.timeoutMs + (job.type === FETCH ? FETCH_LEASE_GRACE_MS : job.type === SHOT ? SHOT_LEASE_GRACE_MS : job.type === AUDIT ? AUDIT_LEASE_GRACE_MS : job.type === LOOKUP ? LOOKUP_LEASE_GRACE_MS : LEASE_GRACE_MS);
+  job.leaseUntil = Date.now() + job.timeoutMs + (job.type === FETCH ? FETCH_LEASE_GRACE_MS : job.type === SHOT ? SHOT_LEASE_GRACE_MS : job.type === AUDIT ? AUDIT_LEASE_GRACE_MS : job.type === LOOKUP ? LOOKUP_LEASE_GRACE_MS : job.type === ADS ? ADS_LEASE_GRACE_MS : LEASE_GRACE_MS);
   return job;
 }
 
@@ -441,6 +449,40 @@ function readChat(body) {
     return { error: `timeoutMs is from ${CHAT_MIN_TIMEOUT_MS} to ${CHAT_MAX_TIMEOUT_MS}` };
   }
   const payload = { prompt };
+  if (str(body.worker).trim()) payload.worker = str(body.worker).trim();
+  return { payload, timeoutMs };
+}
+
+function readAds(body) {
+  const place = adsCountry(body.country);
+  if (!place) return { error: 'country is a country name or a 2-letter ISO code (Malaysia, MY)' };
+  const industry = str(body.industry).trim();
+  if (!industry) return { error: 'industry is required' };
+  if (industry.length > 100) return { error: 'industry is at most 100 characters' };
+  if (body.terms != null && (!Array.isArray(body.terms) || body.terms.length > 10 || body.terms.some((t) => typeof t !== 'string' || !t.trim() || t.length > 100))) {
+    return { error: 'terms is a list of up to 10 words, each at most 100 characters' };
+  }
+  const number = (name, def, min, max) => {
+    const v = body[name] == null ? def : Number(body[name]);
+    return Number.isInteger(v) && v >= min && v <= max ? v : { error: `${name} is a whole number from ${min} to ${max}` };
+  };
+  const maxMetaAds = number('maxMetaAds', 150, 10, 500);
+  if (maxMetaAds.error) return maxMetaAds;
+  const maxGoogleAdvertisers = number('maxGoogleAdvertisers', 30, 1, 100);
+  if (maxGoogleAdvertisers.error) return maxGoogleAdvertisers;
+  const googleRegion = body.googleRegion == null ? place.googleRegion : number('googleRegion', null, 2000, 2999);
+  if (googleRegion?.error) return googleRegion;
+  if (body.activeOnly != null && typeof body.activeOnly !== 'boolean') return { error: 'activeOnly is a boolean' };
+  const timeoutMs = body.timeoutMs == null ? ADS_DEFAULT_TIMEOUT_MS : Number(body.timeoutMs);
+  if (!Number.isFinite(timeoutMs) || timeoutMs < ADS_MIN_TIMEOUT_MS || timeoutMs > ADS_MAX_TIMEOUT_MS) {
+    return { error: `timeoutMs is from ${ADS_MIN_TIMEOUT_MS} to ${ADS_MAX_TIMEOUT_MS}` };
+  }
+  // The words come from here, not from the PC, so changing them needs no new package.
+  const { terms, googleQueries } = searchTerms(industry, place, arr(body.terms).map(str));
+  const payload = {
+    country: place.code, countryName: place.name, industry, terms, googleQueries, googleRegion,
+    maxMetaAds, maxMetaTerms: 3, maxGoogleAdvertisers, maxGoogleDomains: 20, activeOnly: body.activeOnly !== false,
+  };
   if (str(body.worker).trim()) payload.worker = str(body.worker).trim();
   return { payload, timeoutMs };
 }
@@ -627,7 +669,7 @@ async function route(req, res) {
       if (!body.payload || typeof body.payload !== 'object') { json(res, 404, { error: 'no such job' }); return; }
       // Not create(): a waiting worker must not be handed a job this one is about to finish.
       const type = JOB_TYPES.includes(body.type) ? body.type : SCAN;
-      job = add({ ...body.payload }, type === FETCH ? FETCH_DEFAULT_TIMEOUT_MS : type === SHOT ? SHOT_DEFAULT_TIMEOUT_MS : type === AUDIT ? AUDIT_DEFAULT_TIMEOUT_MS : type === LOOKUP ? LOOKUP_DEFAULT_TIMEOUT_MS : type === CHAT ? CHAT_DEFAULT_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, id, type);
+      job = add({ ...body.payload }, type === FETCH ? FETCH_DEFAULT_TIMEOUT_MS : type === SHOT ? SHOT_DEFAULT_TIMEOUT_MS : type === AUDIT ? AUDIT_DEFAULT_TIMEOUT_MS : type === LOOKUP ? LOOKUP_DEFAULT_TIMEOUT_MS : type === CHAT ? CHAT_DEFAULT_TIMEOUT_MS : type === ADS ? ADS_DEFAULT_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, id, type);
       lease(job, worker);
     }
     if (job.status === 'done' || job.status === 'failed') { json(res, 409, { error: `job is already ${job.status}` }); return; }
@@ -753,6 +795,20 @@ async function route(req, res) {
     return;
   }
 
+  if (method === 'POST' && p === '/api/ads') {
+    const body = await readJson(req);
+    const ads = readAds(body);
+    if (ads.error) { json(res, 400, { error: ads.error }); return; }
+    const job = create(ads.payload, ads.timeoutMs, ADS);
+    // Waits for the research by default; wait 0 returns the id at once.
+    const waitSec = Number(body.wait ?? q.get('wait') ?? NaN);
+    const waitMs = Number.isFinite(waitSec) ? waitSec * 1000 : ads.timeoutMs + ADS_LEASE_GRACE_MS;
+    const waited = await waitFor(job, Math.min(MAX_CALLER_WAIT_MS, waitMs), res);
+    if (res.destroyed) return;
+    json(res, waited.status === 'done' || waited.status === 'failed' ? 200 : 202, { job: view(waited) });
+    return;
+  }
+
   const adviceFor = /^\/api\/audit\/([a-f0-9]{12})\/advice$/.exec(p);
   if (adviceFor && (method === 'POST' || method === 'GET')) {
     const body = method === 'POST' ? await readJson(req) : {};
@@ -778,7 +834,7 @@ async function route(req, res) {
     return;
   }
 
-  const jobId = /^\/api\/(?:jobs|scan|fetch|shot|audit|lookup|chat)\/([a-f0-9]{12})$/.exec(p);
+  const jobId = /^\/api\/(?:jobs|scan|fetch|shot|audit|lookup|chat|ads)\/([a-f0-9]{12})$/.exec(p);
   if (jobId && method === 'GET') {
     const job = jobs.get(jobId[1]);
     if (!job) { json(res, 404, { error: 'no such job' }); return; }
@@ -801,7 +857,7 @@ async function route(req, res) {
     const status = str(q.get('status'));
     const type = str(q.get('type'));
     const list = [...jobs.values()].filter((j) => (!status || j.status === status) && (!type || j.type === type)).reverse().slice(0, 200)
-      .map(({ result, ...j }) => ({ ...view(j), found: result?.found ?? null, ...(j.type === SHOT ? { blocked: result?.blocked ?? null } : {}) }));
+      .map(({ result, ...j }) => ({ ...view(j), found: result?.found ?? null, ...(j.type === SHOT ? { blocked: result?.blocked ?? null } : {}), ...(j.type === ADS ? { summary: result?.summary ?? null } : {}) }));
     json(res, 200, { jobs: list });
     return;
   }

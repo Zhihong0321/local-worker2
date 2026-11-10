@@ -24,6 +24,8 @@ caller ──POST /api/scan──▶  service (Railway)  ◀──GET /api/jobs/
 | `package.mjs` | Builds `LocalGmapWorker.zip` with a ready `worker.env` |
 | `worker/worker.ps1` | The PC worker, Windows PowerShell 5.1, nothing to install |
 | `worker/fetch.py` | One page fetch: curl_cffi (Chrome's TLS fingerprint) + Scrapling's parser and markdown, no browser |
+| `adsearch.mjs` | The countries (Meta code, Google region id) and industry words an ads research searches |
+| `worker/ads.mjs` | One `ads.research` job: advertisers in a country and industry, from Google's Ads Transparency Center and Meta's Ad Library |
 | `worker/chat.mjs` | Forwards `chat.ask` jobs to the local ChatGPT bridge |
 | `worker/chat_bridge.mjs` | Local WebSocket bridge server (port 8765) between worker and Chrome extension |
 | `worker/extension/` | Chrome extension (Manifest V3) bridging web ChatGPT directly to worker |
@@ -68,6 +70,25 @@ shows each handler's health; the hub checks every handler's canary keywords
 60 s after it starts (`HANDLER_CHECK_START_DELAY_MS`) and then daily
 (`HANDLER_CHECK_INTERVAL_MS`, `0` turns both off). Full routes on the API page
 (`/`, `docs/index.html`).
+
+## Ads research (`ads.research`)
+
+`POST /api/ads {"country":"Malaysia","industry":"solar","wait":300}` lists who advertises in a
+country and industry, read by a worker PC on its own line from two libraries:
+
+- **Google Ads Transparency Center**: the Transparency Center's own calls
+  (`adstransparency.google.com/anji/_/rpc/SearchService/*`), no browser. Advertisers and
+  websites matching the industry words, then the ads each shows in the country (Google's region id
+  is 2000 plus the ISO 3166 number: Malaysia 2458; the filter is field 8 of the search).
+- **Meta Ad Library**: the library page opened in the PC's Edge or Chrome, headless, driven over
+  DevTools like `shot.mjs`. The first ads are in the page; scrolling makes it ask for the rest,
+  which are read off the wire. No login.
+
+The service works out the words (`adsearch.mjs`) and the PC does the reading, so `worker/ads.mjs`
+is shared by the Windows and macOS workers (the macOS one runs it from `worker/`). A source that
+fails, is rate-limited (Google answers HTTP 429 to a line that asks too often: the worker waits twice,
+then stops asking) or has no browser comes back labelled in `google.status` / `meta.status` and the
+other source is still returned. Routes and fields are on the API page.
 
 ## ChatGPT Web Bridge (`chat.ask`)
 

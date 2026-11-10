@@ -24,6 +24,10 @@
 # The same Python runs site.audit jobs (audit.py): an SEO and GEO benchmark of
 # one website, a few dozen polite requests to that site.
 #
+# ads.research jobs (ads.mjs, on the same Node) read who advertises in one country and
+# industry from Google's Ads Transparency Center and Meta's Ad Library. Google needs only
+# the Node; Meta's page is opened in the browser web.shot uses.
+#
 # web.shot jobs (shot.mjs, on the portable Node the lookups use) take a proof
 # screenshot of one page with the Microsoft Edge Windows already has, headless
 # on a throwaway profile. Nothing is downloaded for it; a PC without Edge does
@@ -855,6 +859,46 @@ function Invoke-Chat($Job) {
   }
 }
 
+# One ads.research job, by ads.mjs on the portable Node, with the payload in a file.
+# Google's Ads Transparency Center needs only Node; Meta's Ad Library also needs the
+# browser web.shot uses, and without one the job still returns Google's side, labelled.
+function Invoke-Ads($Job) {
+  $p = $Job.payload
+  $file = Join-Path $Data "ads-$($Job.id).json"
+  $spec = @{ country = $p.country; countryName = $p.countryName; industry = $p.industry; terms = @($p.terms); googleQueries = @($p.googleQueries); googleRegion = $p.googleRegion; maxMetaAds = $p.maxMetaAds; maxMetaTerms = $p.maxMetaTerms; maxGoogleAdvertisers = $p.maxGoogleAdvertisers; maxGoogleDomains = $p.maxGoogleDomains; activeOnly = $p.activeOnly; timeoutMs = [int]$Job.timeoutMs; browser = $script:ShotExe }
+  [IO.File]::WriteAllText($file, ($spec | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
+  $proc = $null
+  try {
+    $nodeCmd = if ($NodeExe -and (Test-Path -LiteralPath $NodeExe)) { $NodeExe } else { 'node' }
+    $psi = New-Object Diagnostics.ProcessStartInfo $nodeCmd
+    $psi.Arguments = (@((Join-Path $PSScriptRoot 'ads.mjs'), $file) | ForEach-Object { Quote-NodeArgument $_ }) -join ' '
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $proc = [Diagnostics.Process]::Start($psi)
+    # Both streams at once: a full stderr pipe would stall the child.
+    $out = $proc.StandardOutput.ReadToEndAsync()
+    $err = $proc.StandardError.ReadToEndAsync()
+    if (-not $proc.WaitForExit([int]$Job.timeoutMs + 10000)) {
+      try { $proc.Kill() } catch { }
+      throw "the ads research took longer than $([int]($Job.timeoutMs / 1000)) s"
+    }
+    $proc.WaitForExit()
+    # The answer is the last line.
+    $line = @($out.Result.Trim() -split "`r?`n")[-1]
+    if (-not $line) { throw "ads.mjs answered nothing: $($err.Result.Trim())" }
+    $r = $line | ConvertFrom-Json
+    if (-not $r.ok) { throw [string]$r.error }
+    $r.result | Add-Member worker $Name
+    return $r.result
+  } finally {
+    if ($proc) { $proc.Dispose() }
+    Remove-Item $file -Force -ErrorAction SilentlyContinue
+  }
+}
+
 # ------------------------------------------------------------------ results
 
 # Post a result, retrying the service for a few minutes. If it never takes it,
@@ -937,6 +981,7 @@ while ($true) {
       if ($script:NodeReady) { 'site.lookup' }
       if ($script:NodeReady -and $script:ShotExe) { 'web.shot' }
       if ($script:NodeReady) { 'chat.ask' }
+      if ($script:NodeReady) { 'ads.research' }
     )) -join ','
     if (-not $script:Types) { Start-Sleep -Seconds ([Math]::Min(25, [Math]::Max(1, [int]($restUntil - (Get-Date)).TotalSeconds))); continue }
     $r = Invoke-Hub 'GET' ("/api/jobs/next?worker=$([uri]::EscapeDataString($Name))&types=$($script:Types)&wait=25") $null 45
@@ -1012,6 +1057,22 @@ while ($true) {
         Log "job $($job.id) failed: $($_.Exception.Message)"
         Send-Result $job.id $job.payload $false $null ([string]$_.Exception.Message) 0 'chat.ask'
       } finally { $script:JobId = $null }
+      continue
+    }
+    if ($job.type -eq 'ads.research') {
+      Log "job $($job.id): ads $($job.payload.industry) in $($job.payload.country)"
+      Stay-Awake $true
+      try {
+        $result = Invoke-Ads $job
+        Log "job $($job.id): ads $($result.summary.advertisers) advertisers (Google $($result.summary.googleAdvertisers), Meta $($result.summary.metaAdvertisers)) in $([Math]::Round($result.tookMs / 1000)) s"
+        Send-Result $job.id $job.payload $true $result '' 0 'ads.research'
+      } catch {
+        Log "job $($job.id) failed: $($_.Exception.Message)"
+        Send-Result $job.id $job.payload $false $null ([string]$_.Exception.Message) 0 'ads.research'
+      } finally {
+        Stay-Awake $false
+        $script:JobId = $null
+      }
       continue
     }
     Log "job $($job.id): $($job.payload.keyword) in $($job.payload.place) (max $($job.payload.max))"
