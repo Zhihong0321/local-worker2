@@ -22,6 +22,10 @@
 # the keyword's family, then for a Business scan "shop/company in <street>" for
 # the streets the first pass found. The words come from the service on every job.
 #
+# ads.research jobs (ads.mjs, on the same Node) read who advertises in one country and
+# industry from Google's Ads Transparency Center and Meta's Ad Library. Google needs only
+# the Node; Meta's page is opened in the browser web.shot uses.
+#
 # web.shot jobs (shot.mjs, on the portable Node the lookups use) take a proof
 # screenshot of one page with the Google Chrome this Mac already has, headless
 # on a throwaway profile. Nothing is downloaded for it; a Mac without Chrome

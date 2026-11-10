@@ -195,7 +195,7 @@ async function google(job, deadline) {
       firstShown: firsts[0] ?? null, lastShown, activeNow: lastShown ? (Date.parse(lastShown) / 1000) >= today - 7 * DAY : null,
       matchedBy: [...f.via].slice(0, 6),
       url: `${GOOGLE}/advertiser/${f.id}?region=${job.country}`,
-      sampleAds: list.sort((a, b) => text(b.lastShown).localeCompare(text(a.lastShown))).slice(0, 3),
+      sampleAds: list.sort((a, b) => text(b.lastShown).localeCompare(text(a.lastShown))).slice(0, 6),
       relevance: words.some((w) => text(f.name).toLowerCase().includes(w) || [...f.domains].some((d) => d.includes(w))) ? 'name-match' : 'unconfirmed',
     };
   }).sort((a, b) => (a.relevance === 'name-match' ? 0 : 1) - (b.relevance === 'name-match' ? 0 : 1) || b.adsInCountry - a.adsInCountry);
@@ -312,20 +312,48 @@ function parseMeta(raw, into) {
   }
 }
 
+/** What an ad's own words give away: contact numbers, prices, hooks, links and (a guess at) the language. */
+const HOOKS = ['free', 'percuma', 'discount', 'diskaun', 'promo', 'promotion', 'rebate', 'subsid', 'incentive', 'installment', 'ansuran', 'save', 'jimat',
+  'warranty', 'waranti', 'guarantee', 'limited', 'terhad', 'bonus', 'gift', 'hadiah', 'loan', 'financing', 'pembiayaan', 'quotation', 'kuotasi',
+  'site visit', 'survey', 'net metering', 'nem', 'seda', 'payback', 'roi', 'zero', 'bil elektrik', 'electricity bill', 'testimoni', 'testimonial'];
+function extract(raw) {
+  const t = text(raw);
+  const lower = t.toLowerCase();
+  const phones = [...new Set((t.match(/(?:\+\d{1,3}[\s-]?)?\(?\d{2,4}\)?[\s-]?\d{3,4}[\s-]?\d{3,4}/g) ?? [])
+    .map((p) => p.replace(/\s+/g, ' ').trim()).filter((p) => { const d = p.replace(/\D/g, ''); return d.length >= 9 && d.length <= 13 && !/^(19|20)\d\d/.test(d); }))].slice(0, 3);
+  const prices = [...new Set((t.match(/(?:RM|MYR|S\$|SGD|US\$|USD|Rp|IDR|THB|\$|€|£)\s?\d[\d,.]*\s?(?:k|K|juta|million)?/g) ?? []).map((x) => x.trim()))].slice(0, 6);
+  const percents = [...new Set((t.match(/\d{1,3}\s?%/g) ?? []).map((x) => x.replace(/\s/g, '')))].slice(0, 4);
+  const hooks = HOOKS.filter((h) => new RegExp('(^|[^a-z])' + h.replace(/ /g, '\\s') + '([^a-z]|$)', 'i').test(lower));
+  const links = [...new Set(t.match(/https?:\/\/[^\s)]+|(?:wa\.me|wa\.link)\/\S+/g) ?? [])].slice(0, 3);
+  const malay = (lower.match(/\b(yang|dan|untuk|dengan|anda|kami|sekarang|rumah|tenaga|pasang|jimat|bil|sila|hubungi|percuma)\b/g) ?? []).length;
+  const language = /[\u4e00-\u9fff]/.test(t) ? 'chinese' : malay >= 2 ? 'malay' : /[a-z]/i.test(t) ? 'english' : 'unknown';
+  return { phones, prices, percents, hooks, links, language };
+}
+
 /** One ad, cut down to what research needs. */
 function metaAd(ad) {
   const s = ad.snapshot ?? {};
   const card = arr(s.cards)[0] ?? {};
   const link = text(s.link_url || card.link_url);
   const body = text(s.body?.text || card.body).replace(/\s+/g, ' ').trim();
+  const headline = text(s.title || card.title).replace(/\s+/g, ' ').trim();
+  const url = (v) => { const u = text(v); return /^https?:\/\//.test(u) ? u : null; };
+  const videoPreview = url(arr(s.videos)[0]?.video_preview_image_url) || url(arr(s.cards).find((c) => c.video_preview_image_url)?.video_preview_image_url);
+  const images = [...new Set([...arr(s.images).map((i) => url(i.resized_image_url) || url(i.original_image_url)),
+    ...arr(s.cards).map((c) => url(c.resized_image_url) || url(c.original_image_url))].filter(Boolean))].slice(0, 4);
   return {
     id: text(ad.ad_archive_id), pageId: text(ad.page_id), pageName: text(ad.page_name || s.page_name),
     pageUrl: text(s.page_profile_uri) || null, likes: Number.isFinite(Number(s.page_like_count)) ? Number(s.page_like_count) : null,
     categories: arr(s.page_categories).map(text), active: ad.is_active === true,
     start: iso(ad.start_date), end: iso(ad.end_date), platforms: arr(ad.publisher_platform).map(text),
     format: text(s.display_format) || null,
-    headline: text(s.title || card.title).replace(/\s+/g, ' ').trim().slice(0, 200) || null,
-    text: body.slice(0, 600) || null, cta: text(s.cta_text || card.cta_text) || null,
+    headline: headline.slice(0, 200) || null,
+    text: body.slice(0, 1500) || null, cta: text(s.cta_text || card.cta_text) || null, ctaType: text(s.cta_type || card.cta_type) || null,
+    images, videoPreview, image: images[0] ?? videoPreview ?? null, hasVideo: arr(s.videos).length > 0 || !!videoPreview,
+    cards: arr(s.cards).length > 1 ? arr(s.cards).slice(0, 6).map((c) => ({ title: text(c.title).slice(0, 120) || null, body: text(c.body).slice(0, 200) || null, link: url(c.link_url)?.slice(0, 300) ?? null, cta: text(c.cta_text) || null, image: url(c.resized_image_url) || url(c.original_image_url) })) : [],
+    byline: text(s.byline) || null, linkDescription: text(s.link_description || card.link_description).slice(0, 300) || null,
+    extraLinks: arr(s.extra_links).map(text).filter(Boolean).slice(0, 3), pageImage: url(s.page_profile_picture_url),
+    extracted: extract(body + ' ' + headline),
     link: link ? link.slice(0, 300) : null, domain: host(link) || text(s.caption).toLowerCase() || null,
     versions: Number(ad.collation_count) || 1,
     url: `https://www.facebook.com/ads/library/?id=${text(ad.ad_archive_id)}`,
@@ -474,15 +502,23 @@ async function meta(job, deadline) {
     const industryAds = list.filter((a) => about(a.headline) || about(a.text) || about(a.domain)).length;
     const nameMatch = about(first.pageName);
     const longest = starts[0] ? Math.max(0, Math.round((Date.now() - Date.parse(starts[0])) / (DAY * 1000))) : null;
+    const sum = (pick) => { const m = {}; for (const a of list) for (const v of arr(pick(a.extracted ?? {}))) if (v) m[v] = (m[v] ?? 0) + 1; return m; };
+    const recent = list.filter((a) => a.start && Date.parse(a.start) >= Date.now() - 30 * DAY * 1000).length;
+    const oldest = [...list].sort((a, b) => text(a.start).localeCompare(text(b.start)));
+    const newest = [...oldest].reverse();
+    const sample = [];
+    for (const ad of [...oldest.slice(0, 3), ...newest]) if (sample.length < 6 && !sample.includes(ad)) sample.push(ad);
     return {
-      pageName: first.pageName || null, pageId: first.pageId || null, pageUrl: first.pageUrl, likes: first.likes, categories: first.categories,
+      pageName: first.pageName || null, pageId: first.pageId || null, pageUrl: first.pageUrl, likes: first.likes, categories: first.categories, pageImage: first.pageImage,
+      contacts: sum((e) => e.phones), prices: sum((e) => e.prices), percents: sum((e) => e.percents), hooks: sum((e) => e.hooks), languages: sum((e) => [e.language]),
+      adsWithVideo: list.filter((a) => a.hasVideo).length, startedLast30Days: recent, byline: first.byline,
       adsSeen: list.length, activeAds: list.filter((a) => a.active).length, industryAds,
       relevance: nameMatch ? 'name-match' : industryAds >= 2 ? 'ads-mention' : 'unconfirmed',
       firstStarted: starts[0] ?? null, lastStarted: starts.at(-1) ?? null, longestRunningDays: longest,
       formats: count((a) => a.format), platforms: count((a) => a.platforms), ctas: count((a) => a.cta), websites: count((a) => a.domain),
       libraryUrl: `https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=${job.country}&view_all_page_id=${first.pageId}`,
-      // The longest-running ads first: an ad that runs for months is the one that pays.
-      sampleAds: [...list].sort((a, b) => text(a.start).localeCompare(text(b.start))).slice(0, 3),
+      // The three longest-running ads (an ad that runs for months is the one that pays), then the newest.
+      sampleAds: sample,
     };
   }).sort((a, b) => ({ 'name-match': 0, 'ads-mention': 1, unconfirmed: 2 })[a.relevance] - ({ 'name-match': 0, 'ads-mention': 1, unconfirmed: 2 })[b.relevance]
     || b.industryAds - a.industryAds || b.adsSeen - a.adsSeen);

@@ -66,6 +66,10 @@ HOW IT WORKS
   has. If Google refuses the line it takes no Maps jobs for 30 minutes but
   still reads web pages.
 
+  It also takes ads research jobs: who advertises in one country and industry,
+  read from Google's Ads Transparency Center (no browser) and Meta's Ad Library
+  (opened in Google Chrome, headless; without Chrome only Google's side is read).
+
 SETTINGS (worker.env)
   HUB_URL            the service, for example https://myworker.up.railway.app
   WORKER_KEY         the worker key from the service package
