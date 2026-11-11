@@ -210,7 +210,7 @@ export function count(result, labels, readAt = Date.now()) {
   const measurable = {
     runTime: !activeOnly,
     launches: !activeOnly,
-    why: activeOnly ? `${Math.round(activeShare * 100)}% of the ads read are still running: ads that were switched off are not in the sample, so how long an angle keeps running, and whether launches are rising, cannot be measured. Run the research with activeOnly false to measure them.` : null,
+    why: activeOnly ? `${Math.round(activeShare * 100)}% of the ads read are still running: ads that were switched off are not in the sample, so how long an angle keeps running, and whether launches are rising, cannot be measured. Outside the EU, Meta's Ad Library keeps only running ads, so ended ads cannot be read at all.` : null,
   };
 
   // Advertisers: the LLM's per-ad verdicts decide, by majority, whether each is in the industry and local.

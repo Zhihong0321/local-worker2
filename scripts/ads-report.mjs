@@ -204,7 +204,7 @@ if (C) {
     <td>${esc(x.channel ?? '-')}</td></tr>`).join('');
   const angles = C.angles.map((x) => `<tr><td><b>${label(x.angle)}</b></td><td class="w">${bar(x.share, 'ink')}<span class="n">${x.share}%</span></td>
     <td class="n">${x.advertisers}<div class="sub">${x.topShare}% from ${esc(cut(x.topAdvertiser, 22))}</div></td>
-    <td class="n">${x.keptPast90 ? (x.keptPast90.matureAds ? `${x.keptPast90.rate}%<div class="sub">${x.keptPast90.kept} of ${x.keptPast90.matureAds} old enough</div>` : '-') : '<span class="sub">not measurable</span>'}</td>
+    ${C.measurable?.runTime ? `<td class="n">${x.keptPast90 ? (x.keptPast90.matureAds ? `${x.keptPast90.rate}%<div class="sub">${x.keptPast90.kept} of ${x.keptPast90.matureAds} old enough</div>` : '-') : '-'}</td>` : ''}
     <td>${x.evidence === 'weak' ? `<span class="tag check" title="${esc(x.weakBecause)}">weak evidence</span><div class="sub">${esc(x.weakBecause)}</div>` : '<span class="tag good">sound</span>'}</td></tr>`).join('');
   const maxLaunch = Math.max(1, ...C.launchesByMonth.map((x) => x.launches));
   const months = C.launchesByMonth.slice(-18).map((x) => `<div class="col"><i style="height:${Math.round((100 * x.launches) / maxLaunch)}%"></i><b>${x.launches}</b><span>${esc(x.month.slice(2))}</span></div>`).join('');
@@ -227,7 +227,7 @@ ${W ? `<section class="sec" id="verdict"><div class="in">
 <section class="sec" id="angles"><div class="in">
   <div class="head"><p class="eyebrow">What they say</p><h2>The reasons they give to buy. <span class="g">And how much each one can be trusted.</span></h2>
   <p class="lead">Each ad is tagged with up to three angles. ${C.measurable?.runTime ? "Kept past 90 days: of the ads at least 90 days old, the share that ran 90 days or more. Ads that keep running are usually the ones that pay." : esc(C.measurable?.why ?? "")} An angle is weak evidence when fewer than four advertisers use it or one advertiser carries half of it; the verdict is not built on those.</p></div>
-  <table class="gtab"><tr><th>Angle</th><th>Share of ads</th><th>Advertisers</th><th>Kept past 90 days</th><th>Evidence</th></tr>${angles}</table>
+  <table class="gtab"><tr><th>Angle</th><th>Share of ads</th><th>Advertisers</th>${C.measurable?.runTime ? '<th>Kept past 90 days</th>' : ''}<th>Evidence</th></tr>${angles}</table>
 </div></section>
 
 <section class="sec band" id="aim"><div class="in">
@@ -439,7 +439,7 @@ footer .k{font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppe
   footer .in{grid-template-columns:1fr 1fr}
 }
 @media (max-width:560px){
-  .qs,.splits{grid-template-columns:1fr}.gtab{font-size:13.5px}.bar{width:60px}
+  .qs,.splits{grid-template-columns:1fr}.gtab{font-size:13.5px;display:block;overflow-x:auto;max-width:100%}.gtab td.w .bar{display:none}.bar{width:60px}
   .rows li,.arows>div{grid-template-columns:1fr;gap:7px}
   .ads{grid-template-columns:1fr}.ad{grid-template-columns:104px minmax(0,1fr)}.pic img,.nopic{width:104px}
   .deadline{grid-template-columns:1fr;gap:10px}
