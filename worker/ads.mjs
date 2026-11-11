@@ -20,7 +20,7 @@
 // also returns ads that only mention the word (a marketplace listing a solar
 // lamp): those advertisers stay in the list, labelled `relevance: 'unconfirmed'`
 // and sorted below the ones whose name or ad text is about the industry.
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -208,6 +208,56 @@ async function google(job, deadline) {
 
 // --------------------------------------------------------------------- Meta
 
+/** Browsers this run started, by pid, so they are closed however the run ends. */
+const running = new Set();
+
+/** The browser and every helper it started: killing only the main process can leave the helpers running. */
+function killTree(pid) {
+  if (!pid) return;
+  try {
+    if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 15_000 });
+    else { spawnSync('pkill', ['-KILL', '-P', String(pid)], { stdio: 'ignore', timeout: 10_000 }); process.kill(pid, 'SIGKILL'); }
+  } catch { /* already gone */ }
+}
+const killRunning = () => { for (const pid of running) killTree(pid); running.clear(); };
+process.on('exit', killRunning);
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+  if (os.constants.signals[sig]) process.on(sig, () => { killRunning(); process.exit(1); });
+}
+
+/** Older than any ads job can run (30 min at most): a browser this old was left by a run that was killed outright. */
+const STALE_MS = 35 * 60_000;
+const etimeMs = (t) => {
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(t.trim());
+  return m ? ((+(m[1] ?? 0) * 24 + +(m[2] ?? 0)) * 3600 + +m[3] * 60 + +m[4]) * 1000 : 0;
+};
+
+/** Closes headless browsers and profile folders an earlier run could not clean up (the worker kills a timed-out job outright). */
+function sweepStale() {
+  try {
+    if (process.platform === 'win32') {
+      const ps = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        "Get-CimInstance Win32_Process -Filter \"Name='msedge.exe' or Name='chrome.exe'\" | Where-Object { $_.CommandLine -like '*lgw-ads-*' -and $_.CommandLine -notlike '*--type=*' } | ForEach-Object { '{0} {1}' -f $_.ProcessId, [int]([DateTime]::Now - $_.CreationDate).TotalSeconds }"],
+        { encoding: 'utf8', windowsHide: true, timeout: 30_000 });
+      for (const line of String(ps.stdout ?? '').split(/\r?\n/)) {
+        const [pid, age] = line.trim().split(/\s+/).map(Number);
+        if (pid && age * 1000 > STALE_MS) killTree(pid);
+      }
+    } else {
+      const ps = spawnSync('ps', ['-axo', 'pid=,etime=,command='], { encoding: 'utf8', timeout: 15_000 });
+      for (const line of String(ps.stdout ?? '').split('\n')) {
+        const m = /^\s*(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+        if (m && m[3].includes('lgw-ads-') && !m[3].includes('--type=') && etimeMs(m[2]) > STALE_MS) killTree(Number(m[1]));
+      }
+    }
+    for (const name of fs.readdirSync(os.tmpdir())) {
+      if (!name.startsWith('lgw-ads-')) continue;
+      const dir = path.join(os.tmpdir(), name);
+      try { if (Date.now() - fs.statSync(dir).mtimeMs > STALE_MS) fs.rmSync(dir, { recursive: true, force: true }); } catch { /* in use or gone */ }
+    }
+  } catch { /* a sweep that fails never stops the job */ }
+}
+
 /** A headless browser on a throwaway profile, and a DevTools connection to it. Copies shot.mjs. */
 async function launch(exe, deadline) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'lgw-ads-'));
@@ -220,6 +270,7 @@ async function launch(exe, deadline) {
     '--window-size=1280,900', 'about:blank',
   ];
   const child = spawn(exe, args, { stdio: 'ignore', windowsHide: true });
+  if (child.pid) running.add(child.pid);
   let exited = null;
   child.on('exit', (code) => { exited = code ?? 'signal'; });
   child.on('error', (e) => { exited = e.message; });
@@ -238,7 +289,10 @@ async function launch(exe, deadline) {
   const close = async (cdp) => {
     try { if (cdp) await Promise.race([cdp.send('Browser.close'), sleep(3000)]); } catch { /* already gone */ }
     try { cdp?.ws.close(); } catch { /* gone */ }
-    if (exited === null) { try { child.kill(); } catch { /* gone */ } }
+    // Give it a moment to exit by itself, then end the whole tree: helpers can outlive the main process.
+    for (let i = 0; i < 15 && exited === null; i++) await sleep(100);
+    killTree(child.pid);
+    running.delete(child.pid);
     // Windows keeps the profile's files locked for a moment after the browser exits.
     for (let i = 0; i < 20; i++) {
       try { fs.rmSync(profile, { recursive: true, force: true }); break; } catch { await sleep(250); }
@@ -466,6 +520,7 @@ async function meta(job, deadline) {
   let browser;
   const ads = new Map();
   try {
+    sweepStale();
     browser = await launch(job.browser, deadline);
     for (let i = 0; i < terms.length; i++) {
       const left = terms.length - i;
@@ -525,6 +580,8 @@ async function meta(job, deadline) {
     };
   }).sort((a, b) => ({ 'name-match': 0, 'ads-mention': 1, unconfirmed: 2 })[a.relevance] - ({ 'name-match': 0, 'ads-mention': 1, unconfirmed: 2 })[b.relevance]
     || b.industryAds - a.industryAds || b.adsSeen - a.adsSeen);
+  // Every ad read, not only the samples: the analysis (analyze.mjs) labels each one.
+  out.ads = [...ads.values()];
   return out;
 }
 

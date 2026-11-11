@@ -882,6 +882,8 @@ function Invoke-Ads($Job) {
     $out = $proc.StandardOutput.ReadToEndAsync()
     $err = $proc.StandardError.ReadToEndAsync()
     if (-not $proc.WaitForExit([int]$Job.timeoutMs + 10000)) {
+      # The whole tree: Kill() ends node only and would leave its headless browser running.
+      try { & taskkill.exe /PID $proc.Id /T /F 2>$null | Out-Null } catch { }
       try { $proc.Kill() } catch { }
       throw "the ads research took longer than $([int]($Job.timeoutMs / 1000)) s"
     }

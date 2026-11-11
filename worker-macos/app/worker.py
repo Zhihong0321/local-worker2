@@ -52,6 +52,7 @@ import re
 import shutil
 import socket
 import ssl
+import signal
 import subprocess
 import sys
 import tarfile
@@ -668,11 +669,26 @@ def remove_linkedin_leftovers():
 # Run one job script in its own process; it gets the payload in a file and
 # prints one JSON line. The answer is the last line: a library that prints to
 # stdout must not break it.
-def run_job_script(args, timeout_ms, env=None, timeout_message='the job timed out', hold_stdin=False):
+def run_job_script(args, timeout_ms, env=None, timeout_message='the job timed out', hold_stdin=False, kill_tree=False):
     # hold_stdin: a pipe held open, never written; the child sees it close if this worker dies.
+    # kill_tree: the job runs in a process group of its own and the whole group is ended on timeout,
+    # so a browser it started does not outlive it (the Windows worker uses taskkill /T for the same).
     hold = os.pipe() if hold_stdin else None
     try:
-        proc = subprocess.run(args, capture_output=True, timeout=timeout_ms / 1000, env=env, stdin=hold[0] if hold else None)
+        if kill_tree:
+            child = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, stdin=hold[0] if hold else None, start_new_session=True)
+            try:
+                out, err = child.communicate(timeout=timeout_ms / 1000)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+                child.communicate()
+                raise RuntimeError(timeout_message)
+            proc = subprocess.CompletedProcess(args, child.returncode, out, err)
+        else:
+            proc = subprocess.run(args, capture_output=True, timeout=timeout_ms / 1000, env=env, stdin=hold[0] if hold else None)
     except subprocess.TimeoutExpired:
         raise RuntimeError(timeout_message)
     finally:
@@ -934,7 +950,7 @@ def invoke_ads(job):
     try:
         timeout_ms = to_int(job.get('timeoutMs'))
         line, err = run_job_script([str(NodeExe), str(SHARED / 'ads.mjs'), str(file)], timeout_ms + 10000,
-                                   timeout_message=f'the ads research took longer than {timeout_ms // 1000} s')
+                                   timeout_message=f'the ads research took longer than {timeout_ms // 1000} s', kill_tree=True)
         if not line:
             raise RuntimeError(f'ads.mjs answered nothing: {err}')
         r = json.loads(line)
