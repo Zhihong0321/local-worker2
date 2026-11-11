@@ -1,6 +1,9 @@
 // Global handler: Wayback Machine. Input is the company's website domain.
-// Lists which years the home page was archived: the first and the latest successful capture, and every year in
-// between, each with a link to the capture. It reads the archive's capture index only. It does not read the archived
+// Lists which years the home page was archived: the first and the latest capture, and every year in between, each
+// with a link to the capture. A capture is any record except an error page (4xx or 5xx): a normal page (200), a
+// redirect (3xx) and a "revisit" record (the archive saw the same page again and stores it without a status code) all
+// show the site was there. Counting status 200 only missed sites the archive stores as revisits (eternalgy.me,
+// 2026-11-11: archived since 2025-03-02, reported as never archived). It reads the archive's capture index only. It does not read the archived
 // pages: the archive refuses uncached page reads with HTTP 429 (decided with the owner, 2026-11-11).
 // Gathers only; it compares nothing.
 
@@ -33,7 +36,7 @@ function result(status, reason, records, excerpt, sourceUrl) {
 
 async function cdx(name, extra) {
   try {
-    const res = await fetch(`https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(name)}&output=json&fl=timestamp,original,statuscode&filter=statuscode:200${extra}`, { headers: { 'user-agent': UA, accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
+    const res = await fetch(`https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(name)}&output=json&fl=timestamp,original,statuscode&filter=!statuscode:%5B45%5D..${extra}`, { headers: { 'user-agent': UA, accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
     let rows;
     try { rows = JSON.parse(await res.text()); } catch { return { ok: false, error: 'answer was not JSON' }; }
@@ -49,7 +52,7 @@ export default async function lookup(keyword) {
   const source = host ? `https://web.archive.org/web/*/${host}` : 'https://web.archive.org/';
   if (!host) return result('couldnt_check', 'keyword_not_a_domain', [], `The keyword "${String(keyword ?? '').slice(0, 80)}" is not a domain name, so the Wayback Machine was not asked.`, source);
   try {
-    // One capture per year, successful captures only. The bare domain first, then www.
+    // One capture per year, error pages not counted. The bare domain first, then www.
     let yearly = null;
     let usedHost = host;
     const errors = [];
@@ -60,7 +63,7 @@ export default async function lookup(keyword) {
     }
     if (!yearly) {
       if (errors.length) return result('couldnt_check', 'archive_unreachable', [], `The Wayback Machine could not be read for ${host} (${errors.join('; ')}). This says nothing about the company.`, source);
-      return result('not_found', 'never_archived', [], `The Wayback Machine holds no successful capture of ${host} or www.${host}.`, source);
+      return result('not_found', 'never_archived', [], `The Wayback Machine holds no capture of ${host} or www.${host} (error pages are not counted).`, source);
     }
 
     // The latest capture of all (the yearly list only shows the first capture of each year). If this call fails the
@@ -85,12 +88,12 @@ export default async function lookup(keyword) {
       captures: yearly.map((r) => ({ date: stamp(r[0]), url: link(r) })),
     };
     const lines = [
-      `Internet Archive for ${usedHost}: first successful capture ${rec.first_capture}, latest ${rec.latest_capture}; captured in ${years.length} of the ${span} years from ${years[0]} to ${latest[0].slice(0, 4)}.`,
+      `Internet Archive for ${usedHost}: first capture ${rec.first_capture}, latest ${rec.latest_capture}; captured in ${years.length} of the ${span} years from ${years[0]} to ${latest[0].slice(0, 4)}.`,
       `Years with a capture: ${years.join(', ')}`,
       missing.length ? `Years in that span with no capture: ${missing.join(', ')}` : 'No year in that span is missing.',
       `First capture: ${rec.first_capture_url}`,
       `Latest capture: ${rec.latest_capture_url}`,
-      'Only the archive\'s capture list was read; the archived pages themselves were not.',
+      'Only the archive\'s capture list was read; the archived pages themselves were not. Error pages (4xx, 5xx) are not counted as captures.',
     ];
     if (!last.ok) lines.push(`The latest capture could not be confirmed (${last.error}); the newest year's first capture is shown instead.`);
     return result('found', null, [rec], lines.join('\n'), source);
