@@ -19,6 +19,9 @@
 #               of failing the job. Network errors (DNS, refused, TLS) still fail.
 #   headers     the answer adds `headers` (the final response's, names in lower
 #               case) and `redirects`, one {url, status, location} per hop.
+# And with format html, mainContent false returns the page as served, <head>
+# included (a site audit reads its title, meta description and viewport);
+# left out or true, html is the main content as before.
 import contextlib
 import ipaddress
 import json
@@ -211,11 +214,16 @@ def fetch(job):
         page = Selector(content=text, url=url)
         title = page.css('title::text').get()
         title = str(title).strip() if title else None
-        if job.get('mainContent', True):
-            page = main_part(page)
-        # _extract_content is Scrapling's own md/txt/html export (scrapling extract). Private,
-        # so the worker pins the Scrapling version it installs.
-        content = ''.join(Convertor._extract_content(page, fmt, main_content_only=True)).strip()
+        if fmt == 'html' and job.get('mainContent', True) is False:
+            # The page as served, <head> included: a site audit reads the title, meta description and
+            # viewport, which Scrapling's html export leaves out (it keeps the <body> only).
+            content = text.strip()
+        else:
+            if job.get('mainContent', True):
+                page = main_part(page)
+            # _extract_content is Scrapling's own md/txt/html export (scrapling extract). Private,
+            # so the worker pins the Scrapling version it installs.
+            content = ''.join(Convertor._extract_content(page, fmt, main_content_only=True)).strip()
     elif failed:
         # keepErrors: an error page of another type comes back as its text.
         content = raw.decode(charset(r, raw[:4096]), errors='replace')
