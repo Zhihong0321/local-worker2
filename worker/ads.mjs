@@ -33,6 +33,8 @@ const GOOGLE_COOL_MS = 20_000;
 const START_TIMEOUT_MS = 20_000;
 const DAY = 86_400;
 
+/** A word long enough to tell a company from noise: two characters of Chinese, three of anything else. */
+const wordLong = (w) => (/[一-鿿]/.test(w) ? w.length >= 2 : w.length >= 3);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const arr = (v) => (Array.isArray(v) ? v : v == null || v === '' ? [] : [v]);
 const text = (v) => (typeof v === 'string' ? v : v == null ? '' : String(v));
@@ -128,7 +130,7 @@ async function google(job, deadline) {
   out.candidates = { advertisers: advertisers.size, domains: domains.size };
 
   // Names that carry the industry word first, then this country's own companies: the cap cuts the tail, not these.
-  const words = arr(job.terms).flatMap((t) => text(t).toLowerCase().split(/\s+/)).filter((w) => w.length >= 3);
+  const words = arr(job.terms).flatMap((t) => text(t).toLowerCase().split(/\s+/)).filter(wordLong);
   const named = (a) => words.some((w) => a.name.toLowerCase().includes(w));
   const rank = (a) => (named(a) ? 0 : 2) + (a.registeredCountry === job.country ? 0 : 1);
   const picked = [...advertisers.values()].sort((a, b) => rank(a) - rank(b)).slice(0, Number(job.maxGoogleAdvertisers) || 40);
@@ -315,7 +317,8 @@ function parseMeta(raw, into) {
 /** What an ad's own words give away: contact numbers, prices, hooks, links and (a guess at) the language. */
 const HOOKS = ['free', 'percuma', 'discount', 'diskaun', 'promo', 'promotion', 'rebate', 'subsid', 'incentive', 'installment', 'ansuran', 'save', 'jimat',
   'warranty', 'waranti', 'guarantee', 'limited', 'terhad', 'bonus', 'gift', 'hadiah', 'loan', 'financing', 'pembiayaan', 'quotation', 'kuotasi',
-  'site visit', 'survey', 'net metering', 'nem', 'seda', 'payback', 'roi', 'zero', 'bil elektrik', 'electricity bill', 'testimoni', 'testimonial'];
+  'site visit', 'survey', 'net metering', 'nem', 'seda', 'payback', 'roi', 'zero', 'bil elektrik', 'electricity bill', 'testimoni', 'testimonial',
+  '免费', '优惠', '折扣', '省电', '电费', '保修', '保固', '分期', '补贴', '限时', '回报', '免费报价', '免费勘察'];
 function extract(raw) {
   const t = text(raw);
   const lower = t.toLowerCase();
@@ -448,7 +451,7 @@ async function metaTerm(cdp, job, term, limit, deadline) {
 }
 
 function sameWords(job) {
-  return arr(job.terms).flatMap((t) => text(t).toLowerCase().split(/\s+/)).filter((w) => w.length >= 3);
+  return arr(job.terms).flatMap((t) => text(t).toLowerCase().split(/\s+/)).filter(wordLong);
 }
 
 async function meta(job, deadline) {

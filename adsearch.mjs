@@ -33,6 +33,7 @@ const LEGAL_FORMS = {
 /** Words that find the same industry on Meta and Google. The first is the industry as asked. */
 const INDUSTRIES = {
   solar: ['solar panel', 'solar installation', 'solar energy', 'photovoltaic'],
+  '太阳能': ['太阳能板', '太阳能安装', '光伏', '太阳能发电'],
 };
 /** The industry in the country's own language, by country. */
 const LOCAL_TERMS = {
