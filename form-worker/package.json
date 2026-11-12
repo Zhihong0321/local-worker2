@@ -1,0 +1,16 @@
+{
+  "name": "form-worker",
+  "version": "1.0.0",
+  "description": "Form Worker: checks lead websites for a contact form and sends contact-form messages, from a PC or Mac",
+  "private": true,
+  "type": "module",
+  "main": "worker.mjs",
+  "engines": { "node": ">=22.2" },
+  "scripts": {
+    "start": "node worker.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "puppeteer-core": "25.13.0"
+  }
+}

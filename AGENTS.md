@@ -71,3 +71,17 @@ the same results.
 - The Windows worker can only be run on Windows: README.md, "Run a test hub and
   worker on Windows", has the steps, the same `LOCAL_GMAP_WORKER_DATA` override
   included. If you changed it without running it, say so.
+
+## Form Worker (`form-worker/`)
+
+A separate Node project, not one of the two workers above. It checks lead websites for a
+contact form and sends contact-form messages, for the hub's `/api/form-scan/*` and
+`/api/form-send/*` routes (agy-lab). One program runs on Windows and macOS, so there is no
+PowerShell/Python port to keep in step; only the launchers differ.
+
+- A change to the hub's verdict logic (`formVerdict`, `formsInHtml`, `researchWebsite`,
+  `contactLinks`, the captcha rules) must be ported to `form-worker/scan.mjs` and `forms.mjs`,
+  then the fixtures regenerated from the hub's `processLead`. `npm test` in `form-worker/` must pass.
+- A change to `agy-lab/src/contact-form-delivery.ts` (deliverNow, planFill, snapshot) must be
+  ported to `form-worker/send.mjs`.
+- Run `npm test` in `form-worker/` before you commit. The send and loop tests need Chrome or Edge.

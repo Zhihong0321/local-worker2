@@ -1,0 +1,257 @@
+{
+  "generated_by": "agy-lab/src/list-step2.ts processLead, hub code as of 2026-11-12",
+  "cases": [
+    {
+      "name": "contact link leads to a form page",
+      "website": "https://alpha-solar.com.my",
+      "pages": {
+        "https://alpha-solar.com.my/": {
+          "html": "<!doctype html><html><head><title>Home</title></head><body><a href=\"/contact\">Contact us</a><p>Solar</p></body></html>"
+        },
+        "https://alpha-solar.com.my/contact": {
+          "html": "<!doctype html><html><head><title>Contact</title></head><body><form action=\"/send\" method=\"post\">\n  <label for=\"n\">Your name</label><input id=\"n\" type=\"text\" name=\"name\" required>\n  <label for=\"e\">Email address</label><input id=\"e\" type=\"email\" name=\"email\" required>\n  <label for=\"m\">Message</label><textarea id=\"m\" name=\"message\" required></textarea>\n  <button type=\"submit\">Send message</button></form></body></html>"
+        }
+      },
+      "expected": {
+        "status": "bot_can_submit",
+        "url": "https://alpha-solar.com.my/contact",
+        "detail": "contact form with name, email, message"
+      }
+    },
+    {
+      "name": "form on the homepage",
+      "website": "https://beta-clinic.com.my",
+      "pages": {
+        "https://beta-clinic.com.my/": {
+          "html": "<!doctype html><html><head><title>Home</title></head><body><form action=\"/send\" method=\"post\">\n  <label for=\"n\">Your name</label><input id=\"n\" type=\"text\" name=\"name\" required>\n  <label for=\"e\">Email address</label><input id=\"e\" type=\"email\" name=\"email\" required>\n  <label for=\"m\">Message</label><textarea id=\"m\" name=\"message\" required></textarea>\n  <button type=\"submit\">Send message</button></form></body></html>"
+        }
+      },
+      "expected": {
+        "status": "bot_can_submit",
+        "url": "https://beta-clinic.com.my/",
+        "detail": "contact form with name, email, message"
+      }
+    },
+    {
+      "name": "form behind recaptcha",
+      "website": "https://gamma-tyres.com.my",
+      "pages": {
+        "https://gamma-tyres.com.my/": {
+          "html": "<!doctype html><html><head><title>Home</title></head><body><form action=\"/send\" method=\"post\">\n  <label for=\"n\">Your name</label><input id=\"n\" type=\"text\" name=\"name\" required>\n  <label for=\"e\">Email address</label><input id=\"e\" type=\"email\" name=\"email\" required>\n  <label for=\"m\">Message</label><textarea id=\"m\" name=\"message\" required></textarea>\n  <button type=\"submit\">Send message</button></form><div class=\"g-recaptcha\" data-sitekey=\"x\"></div></body></html>"
+        }
+      },
+      "expected": {
+        "status": "captcha",
+        "url": "https://gamma-tyres.com.my/",
+        "detail": "reCAPTCHA"
+      }
+    },
+    {
+      "name": "form drawn by wix script",
+      "website": "https://delta-cafe.com.my",
+      "pages": {
+        "https://delta-cafe.com.my/": {
+          "html": "<!doctype html><html><head><title>Home</title></head><body><script src=\"https://static.parastorage.com/services/x.js\"></script><div>Hi</div></body></html>"
+        }
+      },
+      "expected": {
+        "status": "script_form",
+        "url": "https://delta-cafe.com.my/",
+        "detail": "the site draws its forms with script (static.parastorage.com); not checked"
+      }
+    },
+    {
+      "name": "no form and no contact pages",
+      "website": "https://epsilon-shop.com.my",
+      "pages": {
+        "https://epsilon-shop.com.my/": {
+          "html": "<!doctype html><html><head><title>Home</title></head><body><p>We sell things.</p></body></html>"
+        }
+      },
+      "expected": {
+        "status": "no_form",
+        "url": null,
+        "detail": "no contact form in the HTML of 1 page(s)"
+      }
+    },
+    {
+      "name": "no form on home, form on /contact-us fallback",
+      "website": "https://zeta-law.com.my",
+      "pages": {
+        "https://zeta-law.com.my/": {
+          "html": "<!doctype html><html><head><title>Home</title></head><body><p>Law firm</p></body></html>"
+        },
+        "https://zeta-law.com.my/contact-us": {
+          "html": "<!doctype html><html><head><title>Contact us</title></head><body><form action=\"/send\" method=\"post\">\n  <label for=\"n\">Your name</label><input id=\"n\" type=\"text\" name=\"name\" required>\n  <label for=\"e\">Email address</label><input id=\"e\" type=\"email\" name=\"email\" required>\n  <label for=\"m\">Message</label><textarea id=\"m\" name=\"message\" required></textarea>\n  <button type=\"submit\">Send message</button></form></body></html>"
+        }
+      },
+      "expected": {
+        "status": "bot_can_submit",
+        "url": "https://zeta-law.com.my/contact-us",
+        "detail": "contact form with name, email, message"
+      }
+    },
+    {
+      "name": "homepage does not load",
+      "website": "https://eta-down.com.my",
+      "pages": {},
+      "expected": {
+        "status": "unreachable",
+        "url": "https://eta-down.com.my/",
+        "detail": "HTTP 404"
+      }
+    },
+    {
+      "name": "cloudflare check on homepage",
+      "website": "https://theta-cf.com.my",
+      "pages": {
+        "https://theta-cf.com.my/": {
+          "html": "<!doctype html><html><head><title>Just a moment...</title></head><body><p>checking</p></body></html>"
+        }
+      },
+      "expected": {
+        "status": "captcha",
+        "url": "https://theta-cf.com.my/",
+        "detail": "a Cloudflare check guards the page"
+      }
+    },
+    {
+      "name": "social page as website",
+      "website": "https://facebook.com/somebody",
+      "pages": {},
+      "expected": {
+        "status": "not_own_site",
+        "url": null,
+        "detail": ""
+      }
+    },
+    {
+      "name": "no website",
+      "website": "",
+      "pages": {},
+      "expected": {
+        "status": "no_website",
+        "url": null,
+        "detail": ""
+      }
+    },
+    {
+      "name": "newsletter form only",
+      "website": "https://iota-news.com.my",
+      "pages": {
+        "https://iota-news.com.my/": {
+          "html": "<!doctype html><html><head><title>Home</title></head><body><form><input type=\"email\" name=\"email\" placeholder=\"Email\"><button>Subscribe</button></form></body></html>"
+        }
+      },
+      "expected": {
+        "status": "no_form",
+        "url": null,
+        "detail": "no contact form in the HTML of 1 page(s)"
+      }
+    },
+    {
+      "name": "arithmetic question on the form",
+      "website": "https://kappa-quiz.com.my",
+      "pages": {
+        "https://kappa-quiz.com.my/": {
+          "html": "<!doctype html><html><head><title>Home</title></head><body><form><input type=\"email\" name=\"email\"><textarea name=\"message\"></textarea><p>What is 3 + 4 = ?</p><button>Send</button></form></body></html>"
+        }
+      },
+      "expected": {
+        "status": "captcha",
+        "url": "https://kappa-quiz.com.my/",
+        "detail": "a question that checks for robots"
+      }
+    },
+    {
+      "name": "about page holds the form",
+      "website": "https://lambda-team.com.my",
+      "pages": {
+        "https://lambda-team.com.my/": {
+          "html": "<!doctype html><html><head><title>Home</title></head><body><a href=\"/about-us\">About</a></body></html>"
+        },
+        "https://lambda-team.com.my/about-us": {
+          "html": "<!doctype html><html><head><title>About</title></head><body><form action=\"/send\" method=\"post\">\n  <label for=\"n\">Your name</label><input id=\"n\" type=\"text\" name=\"name\" required>\n  <label for=\"e\">Email address</label><input id=\"e\" type=\"email\" name=\"email\" required>\n  <label for=\"m\">Message</label><textarea id=\"m\" name=\"message\" required></textarea>\n  <button type=\"submit\">Send message</button></form></body></html>"
+        }
+      },
+      "expected": {
+        "status": "bot_can_submit",
+        "url": "https://lambda-team.com.my/about-us",
+        "detail": "contact form with name, email, message"
+      }
+    },
+    {
+      "name": "malay labels and hantar button",
+      "website": "https://mu-kedai.com.my",
+      "pages": {
+        "https://mu-kedai.com.my/": {
+          "html": "<!doctype html><html><head><title>Home</title></head><body><form><label>Nama</label><input type=\"text\" name=\"nama\"><label>Emel</label><input type=\"email\" name=\"emel\"><label>Mesej</label><textarea name=\"mesej\"></textarea><button>Hantar</button></form></body></html>"
+        }
+      },
+      "expected": {
+        "status": "bot_can_submit",
+        "url": "https://mu-kedai.com.my/",
+        "detail": "contact form with name, email, message"
+      }
+    },
+    {
+      "name": "only hidden inputs and search",
+      "website": "https://nu-search.com.my",
+      "pages": {
+        "https://nu-search.com.my/": {
+          "html": "<!doctype html><html><head><title>Home</title></head><body><form><input type=\"hidden\" name=\"t\" value=\"1\"><input type=\"search\" name=\"q\"><button>Go</button></form></body></html>"
+        }
+      },
+      "expected": {
+        "status": "no_form",
+        "url": null,
+        "detail": "no contact form in the HTML of 1 page(s)"
+      }
+    },
+    {
+      "name": "verification text on homepage, no form anywhere",
+      "website": "https://xi-verify.com.my",
+      "pages": {
+        "https://xi-verify.com.my/": {
+          "html": "<!doctype html><html><head><title>Home</title></head><body><p>Please verify you are human</p></body></html>"
+        }
+      },
+      "expected": {
+        "status": "no_form",
+        "url": null,
+        "detail": "no contact form in the HTML of 1 page(s)"
+      }
+    },
+    {
+      "name": "contact form on /contact after a verified page link",
+      "website": "https://omicron-ops.com.my",
+      "pages": {
+        "https://omicron-ops.com.my/": {
+          "html": "<!doctype html><html><head><title>Home</title></head><body><a href=\"https://omicron-ops.com.my/contact.html\">Enquiry</a></body></html>"
+        },
+        "https://omicron-ops.com.my/contact.html": {
+          "html": "<!doctype html><html><head><title>Home</title></head><body><form action=\"/send\" method=\"post\">\n  <label for=\"n\">Your name</label><input id=\"n\" type=\"text\" name=\"name\" required>\n  <label for=\"e\">Email address</label><input id=\"e\" type=\"email\" name=\"email\" required>\n  <label for=\"m\">Message</label><textarea id=\"m\" name=\"message\" required></textarea>\n  <button type=\"submit\">Send message</button></form></body></html>"
+        }
+      },
+      "expected": {
+        "status": "bot_can_submit",
+        "url": "https://omicron-ops.com.my/contact.html",
+        "detail": "contact form with name, email, message"
+      }
+    },
+    {
+      "name": "form with an unlabelled submit input",
+      "website": "https://pi-plain.com.my",
+      "pages": {
+        "https://pi-plain.com.my/": {
+          "html": "<!doctype html><html><head><title>Home</title></head><body><form><input type=\"text\" name=\"fullname\"><input type=\"tel\" name=\"phone\"><textarea name=\"msg\"></textarea><input type=\"submit\" value=\"Submit\"></form></body></html>"
+        }
+      },
+      "expected": {
+        "status": "bot_can_submit",
+        "url": "https://pi-plain.com.my/",
+        "detail": "contact form with last_name, phone, message"
+      }
+    }
+  ]
+}

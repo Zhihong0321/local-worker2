@@ -30,6 +30,7 @@ caller ──POST /api/scan──▶  service (Railway)  ◀──GET /api/jobs/
 | `worker/chat_bridge.mjs` | Local WebSocket bridge server (port 8765) between worker and Chrome extension |
 | `worker/extension/` | Chrome extension (Manifest V3) bridging web ChatGPT directly to worker |
 | `worker/*.cmd` | Start, enable / disable autostart |
+| `form-worker/` | Form Worker (Windows and macOS): checks lead websites for a contact form and sends contact-form messages, for the hub's form routes. Own `package.json`; see its README |
 | `test/server.test.mjs` | Round trip over HTTP with a pretend worker (`npm test`) |
 
 ## Deploy on Railway
