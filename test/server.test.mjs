@@ -667,6 +667,25 @@ test('chat round trip: only a worker asking for chat.ask gets it', async () => {
   assert.equal((await (await call(`/api/chat/${job.id}`, api)).json()).job.status, 'done');
 });
 
+test('chat bridge disconnect before delivery requeues the job for another worker', async () => {
+  const posted = call('/api/chat', api, { method: 'POST', body: JSON.stringify({ prompt: 'Retry safely', wait: 3 }) });
+  await new Promise((r) => setTimeout(r, 100));
+  const first = (await (await call('/api/jobs/next?worker=chat-disconnected&types=chat.ask&wait=0', wk)).json()).job;
+  const failed = await call(`/api/jobs/${first.id}/result`, wk, { method: 'POST', body: JSON.stringify({
+    worker: 'chat-disconnected', ok: false,
+    error: 'no active ChatGPT tab connected to local worker on https://chatgpt.com',
+  }) });
+  assert.equal((await failed.json()).requeued, true);
+  assert.equal((await call('/api/jobs/next?worker=chat-disconnected&types=chat.ask&wait=0', wk)).status, 204);
+  const next = (await (await call('/api/jobs/next?worker=chat-ready&types=chat.ask&wait=0', wk)).json()).job;
+  assert.equal(next.id, first.id);
+  assert.equal(next.attempts, 1);
+  await call(`/api/jobs/${next.id}/result`, wk, { method: 'POST', body: JSON.stringify({ worker: 'chat-ready', ok: true, result: { answer: 'ready' } }) });
+  const answer = (await (await posted).json()).job;
+  assert.equal(answer.status, 'done');
+  assert.equal(answer.result.answer, 'ready');
+});
+
 
 test('job metadata is mandatory and clearing cancels active jobs', async () => {
   const post = (body) => fetch(base + '/api/scan', { method: 'POST', headers: api, body: JSON.stringify(body) });

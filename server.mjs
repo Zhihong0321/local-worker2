@@ -104,6 +104,8 @@ const ADVICE = adviceConfig();
 /** Longest a caller is held waiting for advice; Railway's proxy drops a request at about 5 minutes. */
 const ADVICE_MAX_WAIT_MS = 240_000;
 const workers = new Map();
+// A disconnected bridge needs time to reconnect before this worker claims chat again.
+const chatRetryAfter = new Map();
 /** Workers holding a /api/jobs/next request open, oldest first. */
 const waiters = [];
 /** Callers holding a request open until a job finishes, by job id. */
@@ -306,6 +308,7 @@ function evict() {
 
 function claimable(job, worker, types) {
   return job.status === 'pending' && types.includes(job.type) && (!job.payload.worker || job.payload.worker === worker)
+    && (job.type !== CHAT || (chatRetryAfter.get(worker) ?? 0) <= Date.now())
     && (job.type !== LOOKUP || (Date.now() - Date.parse(job.createdAt) <= queueTimeout(job)
       && ![...jobs.values()].some((j) => j.type === LOOKUP && j.status === 'running' && j.payload.host === job.payload.host)));
 }
@@ -702,6 +705,24 @@ async function route(req, res) {
     }
     if (job.status === 'done' || job.status === 'failed') { json(res, 409, { error: `job is already ${job.status}` }); return; }
     if (job.worker && job.worker !== worker) { json(res, 409, { error: `job is held by ${job.worker}` }); return; }
+    // The bridge rejects this before sending a prompt, so it is safe to offer the job again.
+    // Other errors may occur after submission and must not be retried automatically.
+    if (job.type === CHAT && job.status === 'running' && job.worker === worker && body.ok !== true
+        && str(body.error) === 'no active ChatGPT tab connected to local worker on https://chatgpt.com') {
+      chatRetryAfter.set(worker, Date.now() + 5000);
+      job.status = 'pending';
+      job.worker = null;
+      job.leaseUntil = null;
+      job.attempts--;
+      wake(job);
+      const timer = setTimeout(() => {
+        if ((chatRetryAfter.get(worker) ?? 0) <= Date.now()) chatRetryAfter.delete(worker);
+        for (const queued of jobs.values()) if (queued.type === CHAT && queued.status === 'pending') wake(queued);
+      }, 5100);
+      timer.unref();
+      json(res, 200, { ok: true, requeued: true });
+      return;
+    }
     // A late lookup result may arrive after its lease was put back in the queue.
     if (job.type === LOOKUP && !job.worker) job.worker = worker;
     const ok = body.ok === true;
