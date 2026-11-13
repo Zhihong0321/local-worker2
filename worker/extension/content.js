@@ -115,14 +115,12 @@
   const tempToggle = () => [...document.querySelectorAll('button, a, [role="switch"]')]
     .find((e) => /temporary/i.test((e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-testid') || '') + ' ' + (e.innerText || '').slice(0, 40)));
   const isTemporary = () => {
-    if (/[?&]temporary-chat=true\b/i.test(location.search)) return true;
     const t = tempToggle();
     const label = t ? (t.getAttribute('aria-label') || t.innerText || '') : '';
     return /turn off temporary/i.test(label) || t?.getAttribute('aria-pressed') === 'true' || t?.getAttribute('aria-checked') === 'true' ||
       /temporary chat/i.test(String(document.querySelector('main')?.innerText || '').slice(0, 400));
   };
   async function openFreshChat() {
-    await dismissTemporaryIntro();
     if (hasConversation()) {
       for (const b of document.querySelectorAll('a[data-testid="create-new-chat-button"], button[data-testid="create-new-chat-button"], button[aria-label="New chat" i], a[aria-label="New chat" i]')) {
         b.click();
@@ -140,10 +138,8 @@
       const t = tempToggle();
       if (t) { t.click(); await sleep(800); }
     }
-    await dismissTemporaryIntro();
     for (let i = 0; i < 25 && !findInput(); i++) await sleep(200);
     const unpersonalized = await chooseUnpersonalized();
-    await dismissTemporaryIntro();
     return { fresh: !hasConversation(), temporary: isTemporary(), unpersonalized };
   }
 
@@ -156,60 +152,6 @@
     }
     el.click();
   };
-
-  // Opening /?temporary-chat=true shows a blocking card: "Temporary chat / This chat won't appear in
-  // history…" and a Continue button. The composer is behind it, so Send never starts until Continue is clicked.
-  function temporaryIntroButton() {
-    if (!document.body) return null;
-    let snap;
-    try {
-      snap = document.evaluate(
-        "//*[string-length(normalize-space(.)) <= 24 and starts-with(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue')]",
-        document.body,
-        null,
-        XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
-        null
-      );
-    } catch { return null; }
-    let best = null;
-    let bestLen = Infinity;
-    for (let i = 0; i < snap.snapshotLength; i++) {
-      const n = snap.snapshotItem(i);
-      const len = String(n.textContent || '').length;
-      if (len === 0 || len >= bestLen) continue;
-      let node = n;
-      let matched = false;
-      for (let d = 0; d < 12 && node; d++, node = node.parentElement) {
-        const t = node.innerText || '';
-        if (t.length > 1200) break;
-        if (/temporary chat/i.test(t) && /appear in (your )?history/i.test(t)) { matched = true; break; }
-      }
-      if (!matched) continue;
-      best = n;
-      bestLen = len;
-    }
-    if (!best) return null;
-    return best.closest('button, [role="button"], a') || best;
-  }
-  async function dismissTemporaryIntro() {
-    if (!temporaryIntroButton()) return false;
-    for (let i = 0; i < 6 && temporaryIntroButton(); i++) {
-      const btn = temporaryIntroButton();
-      try { press(btn); } catch (err) { console.log('[ChatGPT Worker Extension] temporary intro click: ' + err.message); }
-      await sleep(350);
-    }
-    if (temporaryIntroButton()) {
-      let node = temporaryIntroButton();
-      for (let d = 0; d < 12 && node; d++, node = node.parentElement) {
-        const close = node.querySelector && node.querySelector('button[aria-label*="Close" i], [aria-label="Close" i]');
-        if (close) { try { press(close); } catch {} break; }
-      }
-      await sleep(350);
-    }
-    const cleared = !temporaryIntroButton();
-    console.log('[ChatGPT Worker Extension] temporary chat intro ' + (cleared ? 'dismissed' : 'still open'));
-    return cleared;
-  }
   async function chooseUnpersonalized() {
     const radio = () => [...document.querySelectorAll('[role="menuitemradio"]')].find((e) => /^\s*Unpersonali[sz]ed/i.test(e.innerText || ''));
     const trigger = [...document.querySelectorAll('button')].find((e) => /^\s*(Un)?personali[sz]ed\s*$/i.test(String(e.innerText || '')));
@@ -234,7 +176,6 @@
     personal: [...document.querySelectorAll('button, [role="switch"], [role="menuitem"], [role="menuitemcheckbox"], label')]
       .filter((e) => /personali|memory/i.test((e.innerText || '') + ' ' + (e.getAttribute('aria-label') || '')))
       .slice(0, 10).map((e) => [e.tagName, e.getAttribute('role'), e.getAttribute('data-testid'), e.getAttribute('aria-label'), e.getAttribute('aria-pressed'), e.getAttribute('aria-checked'), e.getAttribute('aria-haspopup'), String(e.innerText || '').slice(0, 60)].filter(Boolean).join('|')),
-    intro: !!temporaryIntroButton(),
     answers: document.querySelectorAll('[data-message-author-role="assistant"]').length,
     turns: document.querySelectorAll('article, [data-testid^="conversation-turn"]').length,
     top: String((document.querySelector('main') || document.body).innerText || '').slice(0, 300),
@@ -262,7 +203,6 @@
       setTimeout(() => location.assign('https://chatgpt.com/?temporary-chat=true'), 300);
       return;
     }
-    await dismissTemporaryIntro();
     updateBadge('busy', 'Worker: Entering prompt...');
 
     const promptInput = findInput();
@@ -308,29 +248,8 @@
     let started = false;
     let stableTicks = 0;
     const startTime = Date.now();
-    let changedAt = startTime;
-    let introResends = 0;
-    let introBusy = false;
 
     const poller = setInterval(() => {
-      // The intro can land after Send. Click Continue and send the same prompt again.
-      if (!started && !introBusy && introResends < 4 && temporaryIntroButton()) {
-        introBusy = true;
-        introResends++;
-        dismissTemporaryIntro().then(() => {
-          try {
-            const input = findInput();
-            if (input) setPromptText(input, task.prompt);
-            const again = document.querySelector('button[data-testid="send-button"]') ||
-              document.querySelector('button[data-testid="fruitjuice-send-button"]') ||
-              document.querySelector('button[aria-label*="Send"]') ||
-              document.querySelector('form button[type="submit"]');
-            if (again) again.click();
-          } catch (err) {
-            console.log('[ChatGPT Worker Extension] resend after intro: ' + err.message);
-          }
-        }).finally(() => { introBusy = false; });
-      }
       const isStopBtnVisible = !!document.querySelector(
         'button[data-testid="stop-button"], button[aria-label*="Stop"]'
       );
@@ -347,7 +266,6 @@
         } else {
           stableTicks = 0;
           lastAnswer = currentText;
-          changedAt = Date.now();
         }
       }
 
@@ -375,7 +293,7 @@
           id: task.id,
           type: 'error',
           error: 'the prompt did not start: ' + JSON.stringify({
-            url: location.href, chat, intro: !!temporaryIntroButton(), input: input ? (input.id || input.tagName) + ':' + String(input.innerText || input.value || '').slice(0, 60) : null,
+            url: location.href, chat, input: input ? (input.id || input.tagName) + ':' + String(input.innerText || input.value || '').slice(0, 60) : null,
             send: btn ? (btn.disabled ? 'disabled' : 'enabled') : 'missing',
             main: String((document.querySelector('main') || document.body).innerText || '').slice(-200),
             controls: [...document.querySelectorAll('a[href="/"], a[href^="/?"], [data-testid*="chat" i], [aria-label*="chat" i], [aria-label*="temporary" i]')].slice(0, 25)
@@ -387,12 +305,9 @@
 
       // Finished when:
       // 1. Generation started, stop button is gone, and new text is stable for 3 checks (600ms)
-      // 2. OR the answer has not changed for 20 s, whatever the page shows: on 2026-11-11 the Mac mini's tab never
-      //    passed check 1, and every complete answer waited for check 3 (about 219 s a question, 44 min a run)
-      // 3. OR hard timeout safeguard after 170s if we have text (a web-search answer can take over a minute)
+      // 2. OR hard timeout safeguard after 170s if we have text (a web-search answer can take over a minute)
       const isComplete =
         (started && !isStopBtnVisible && stableTicks >= 3 && lastAnswer.length > 0) ||
-        (started && lastAnswer.length > 0 && Date.now() - changedAt > 20000) ||
         (Date.now() - startTime > 170000 && lastAnswer.length > 0);
 
       if (isComplete) {
@@ -410,11 +325,4 @@
       }
     }, 200);
   }
-
-  // The intro is on screen before any task arrives (the badge still says Ready). Clear it without a prompt.
-  setInterval(() => {
-    if (isCurrentlyGenerating) return;
-    const btn = temporaryIntroButton();
-    if (btn) { try { press(btn); } catch {} }
-  }, 800);
 })();

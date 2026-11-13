@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Local Gmap Worker - ChatGPT Bridge",
-  "version": "1.0.2",
+  "version": "1.0.1",
   "description": "Bridges local web ChatGPT to the Local Gmap Worker Hub",
   "permissions": [
     "tabs",
