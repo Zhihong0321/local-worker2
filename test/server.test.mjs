@@ -15,7 +15,9 @@ const api = { authorization: 'Bearer ' + process.env.API_KEY, 'content-type': 'a
 const wk = { authorization: 'Bearer ' + workerKey(), 'content-type': 'application/json' };
 test.after(() => server.close());
 
-const call = (path, headers, opts = {}) => fetch(base + path, { headers, ...opts });
+const metadata = { callerId: 'test-device', taskDescription: 'Test job' };
+const jobRoute = (path) => /^\/api\/(scan|fetch|shot|audit|lookup|chat|ads)(?:\?|$)/.test(path);
+const call = (path, headers, opts = {}) => fetch(base + path, { headers, ...opts, ...(jobRoute(path) && opts.method === 'POST' && opts.body ? { body: JSON.stringify({ ...metadata, ...JSON.parse(opts.body) }) } : {}) });
 
 test('health is open, everything else needs a key', async () => {
   assert.equal((await call('/health', {})).status, 200);
@@ -87,7 +89,7 @@ test('fetch round trip: only a worker asking for web.fetch gets it', async () =>
   const next = await call('/api/jobs/next?worker=pc-fetch&types=gmap.scan,web.fetch&wait=1', wk);
   const { job } = await next.json();
   assert.equal(job.type, 'web.fetch');
-  assert.deepEqual(job.payload, { url: 'https://example.com/a', format: 'markdown', mainContent: true, worker: 'pc-fetch' });
+  assert.deepEqual(job.payload, { ...metadata, url: 'https://example.com/a', format: 'markdown', mainContent: true, worker: 'pc-fetch' });
   assert.equal(job.timeoutMs, 60_000);
   const result = { url: job.payload.url, status: 200, title: 'A', content: '# A' };
   await call(`/api/jobs/${job.id}/result`, wk, { method: 'POST', body: JSON.stringify({ worker: 'pc-fetch', ok: true, result }) });
@@ -101,7 +103,7 @@ test('fetch passes keepErrors and headers only when asked', async () => {
   const posted = call('/api/fetch', api, { method: 'POST', body: JSON.stringify({ url: 'https://example.com/k', worker: 'pc-flags', keepErrors: true, headers: true }) });
   await new Promise((r) => setTimeout(r, 100));
   const { job } = await (await call('/api/jobs/next?worker=pc-flags&types=web.fetch&wait=1', wk)).json();
-  assert.deepEqual(job.payload, { url: 'https://example.com/k', format: 'markdown', mainContent: true, keepErrors: true, headers: true, worker: 'pc-flags' });
+  assert.deepEqual(job.payload, { ...metadata, url: 'https://example.com/k', format: 'markdown', mainContent: true, keepErrors: true, headers: true, worker: 'pc-flags' });
   const result = { url: job.payload.url, status: 404, content: 'Not found', headers: { server: 'x' }, redirects: [] };
   await call(`/api/jobs/${job.id}/result`, wk, { method: 'POST', body: JSON.stringify({ worker: 'pc-flags', ok: true, result }) });
   assert.deepEqual((await (await posted).json()).job.result, result);
@@ -109,7 +111,7 @@ test('fetch passes keepErrors and headers only when asked', async () => {
   const plain = call('/api/fetch', api, { method: 'POST', body: JSON.stringify({ url: 'https://example.com/p', worker: 'pc-flags', keepErrors: false, headers: false }) });
   await new Promise((r) => setTimeout(r, 100));
   const { job: other } = await (await call('/api/jobs/next?worker=pc-flags&types=web.fetch&wait=1', wk)).json();
-  assert.deepEqual(other.payload, { url: 'https://example.com/p', format: 'markdown', mainContent: true, worker: 'pc-flags' });
+  assert.deepEqual(other.payload, { ...metadata, url: 'https://example.com/p', format: 'markdown', mainContent: true, worker: 'pc-flags' });
   await call(`/api/jobs/${other.id}/result`, wk, { method: 'POST', body: JSON.stringify({ worker: 'pc-flags', ok: false, error: 'the site answered HTTP 404' }) });
   assert.equal((await (await plain).json()).job.error, 'the site answered HTTP 404');
 });
@@ -152,7 +154,7 @@ test('shot round trip: opt-in, defaults in the payload, the image back unchanged
   }
   const { job } = await (await call('/api/jobs/next?worker=pc-shot&types=web.fetch,web.shot&wait=1', wk)).json();
   assert.equal(job.type, 'web.shot');
-  assert.deepEqual(job.payload, { url: 'https://example.com/s', device: 'desktop', waitMs: 1500, quality: 72, find: 'Call us', worker: 'pc-shot' });
+  assert.deepEqual(job.payload, { ...metadata, url: 'https://example.com/s', device: 'desktop', waitMs: 1500, quality: 72, find: 'Call us', worker: 'pc-shot' });
   assert.equal(job.timeoutMs, 60_000);
   assert.equal(Date.parse(job.leaseUntil) - Date.parse(job.startedAt), 90_000);
   const result = { url: job.payload.url, finalUrl: job.payload.url, status: 404, device: 'desktop', found: true, blocked: false, image: '/9j/AAA', width: 1280, height: 760 };
@@ -175,7 +177,7 @@ test('shot checks its input; mobile and options pass through; DELETE cancels', a
   const r = await call('/api/shot', api, { method: 'POST', body: JSON.stringify({ url: 'https://example.com/m', device: 'mobile', waitMs: 0, quality: 90, wait: 0, worker: 'pc-shot-m' }) });
   assert.equal(r.status, 202);
   const { job } = await r.json();
-  assert.deepEqual(job.payload, { url: 'https://example.com/m', device: 'mobile', waitMs: 0, quality: 90, worker: 'pc-shot-m' });
+  assert.deepEqual(job.payload, { ...metadata, url: 'https://example.com/m', device: 'mobile', waitMs: 0, quality: 90, worker: 'pc-shot-m' });
   const cancelled = await call(`/api/shot/${job.id}`, api, { method: 'DELETE' });
   assert.equal((await cancelled.json()).job.error, 'cancelled by the caller');
   assert.equal((await call('/api/jobs/next?worker=pc-shot-m&types=web.shot&wait=0', wk)).status, 204);
@@ -187,7 +189,7 @@ test('a shot no worker takes fails at its timeoutMs', async (t) => {
   const service = await isolated.start(0);
   t.after(() => service.close());
   const request = (route, body) => fetch(`http://localhost:${service.address().port}${route}`, {
-    headers: api, ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}),
+    headers: api, ...(body ? { method: 'POST', body: JSON.stringify(jobRoute(route) ? { ...metadata, ...body } : body) } : {}),
   });
   const queued = (await (await request('/api/shot', { url: 'https://example.com/', timeoutMs: 20000, wait: 0 })).json()).job;
   for (let i = 0; i < 3; i++) t.mock.timers.tick(5000);
@@ -213,7 +215,7 @@ test('audit round trip waits by default and preserves the report unchanged', asy
   assert.equal(next.status, 200);
   const { job } = await next.json();
   assert.equal(job.type, 'site.audit');
-  assert.deepEqual(job.payload, { url: 'https://example.com/', maxPages: 5, botTest: true, worker: 'pc-audit' });
+  assert.deepEqual(job.payload, { ...metadata, url: 'https://example.com/', maxPages: 5, botTest: true, worker: 'pc-audit' });
   assert.equal(job.timeoutMs, 180_000);
   assert.equal(Date.parse(job.leaseUntil) - Date.parse(job.startedAt), 210_000);
   const result = {
@@ -271,7 +273,7 @@ test('audit accepts boundary options and wait 0 in the query or body', async () 
     assert.equal(response.status, 202);
     const { job } = await response.json();
     assert.equal(job.timeoutMs, timeoutMs);
-    assert.deepEqual(job.payload, { url: 'http://example.com/', maxPages, botTest: false, worker: 'pc-audit-options' });
+    assert.deepEqual(job.payload, { ...metadata, url: 'http://example.com/', maxPages, botTest: false, worker: 'pc-audit-options' });
     assert.equal((await call(`/api/jobs/${job.id}`, api, { method: 'DELETE' })).status, 200);
   }
 });
@@ -312,7 +314,7 @@ test('audit queue deadlines and lease grace use its own timeout', async (t) => {
   const service = await isolated.start(0);
   t.after(() => service.close());
   const request = (route, headers = api, body) => fetch(`http://localhost:${service.address().port}${route}`, {
-    headers, ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}),
+    headers, ...(body ? { method: 'POST', body: JSON.stringify(jobRoute(route) ? { ...metadata, ...body } : body) } : {}),
   });
   const queued = (await (await request('/api/audit', api, { url: 'https://example.com/', timeoutMs: 30000, wait: 0 })).json()).job;
   const pinned = (await (await request('/api/audit', api, { url: 'https://example.com/', timeoutMs: 60000, worker: 'missing-audit', wait: 0 })).json()).job;
@@ -386,7 +388,7 @@ test('lookup round trip waits by default and includes source, version and result
   assert.equal(job.type, 'site.lookup');
   assert.equal(job.timeoutMs, 150000);
   assert.equal(Date.parse(job.leaseUntil) - Date.parse(job.startedAt), 180000);
-  assert.deepEqual(job.payload, {
+  assert.deepEqual(job.payload, { ...metadata,
     handler: lookupA, version: entry.version, host: entry.host, keyword: 'Gamuda', worker: 'pc-lookup',
     source: fs.readFileSync(new URL(`./fixtures/handlers/${entry.file}`, import.meta.url), 'utf8'),
   });
@@ -522,7 +524,7 @@ test('canaries require both correct sides, preserve failures and reject overlapp
     const { job } = await (await pollLookup('pc-canary')).json();
     const entry = fixtureIndex.handlers.find((h) => h.id === job.payload.handler);
     const side = job.payload.keyword === entry.canary.found ? 'found' : 'not_found';
-    assert.deepEqual(Object.keys(job.payload).sort(), ['handler', 'host', 'keyword', 'source', 'version']);
+    assert.deepEqual(Object.keys(job.payload).sort(), ['callerId', 'handler', 'host', 'keyword', 'source', 'taskDescription', 'version']);
     const answer = { status: side, reason: null, records: side === 'found' && entry.id !== lookupB ? [{ name: job.payload.keyword }] : [] };
     await answerLookup(job, answer);
   }
@@ -562,7 +564,7 @@ test('lookup lease expiry wakes an already waiting worker and ordinary queued lo
   const service = await isolated.start(0);
   t.after(() => service.close());
   const request = (route, headers = api, body) => fetch(`http://localhost:${service.address().port}${route}`, {
-    headers, ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}),
+    headers, ...(body ? { method: 'POST', body: JSON.stringify(jobRoute(route) ? { ...metadata, ...body } : body) } : {}),
   });
   const first = (await (await request('/api/lookup', api, { handler: lookupA, keyword: 'Gamuda', worker: 'expired', wait: 0 })).json()).job;
   await request('/api/jobs/next?worker=expired&types=site.lookup&wait=0', wk);
@@ -663,4 +665,24 @@ test('chat round trip: only a worker asking for chat.ask gets it', async () => {
   assert.equal(answer.job.status, 'done');
   assert.equal(answer.job.result.answer, '4');
   assert.equal((await (await call(`/api/chat/${job.id}`, api)).json()).job.status, 'done');
+});
+
+
+test('job metadata is mandatory and clearing cancels active jobs', async () => {
+  const post = (body) => fetch(base + '/api/scan', { method: 'POST', headers: api, body: JSON.stringify(body) });
+  const valid = { keyword: 'test', place: 'test', callerId: 'office-device', taskDescription: 'Find shops' };
+  assert.equal((await post({ ...valid, callerId: '' })).status, 400);
+  assert.equal((await post({ ...valid, taskDescription: '' })).status, 400);
+  assert.equal((await post({ ...valid, taskDescription: 'x'.repeat(51) })).status, 400);
+  const first = (await (await post(valid)).json()).job;
+  const claimed = (await (await call('/api/jobs/next?worker=clear-test&types=gmap.scan&wait=0', wk)).json()).job;
+  assert.equal(claimed.id, first.id);
+  const second = (await (await post({ ...valid, callerId: 'https://example.com' })).json()).job;
+  assert.equal(second.callerId, 'https://example.com');
+  assert.equal(second.taskDescription, 'Find shops');
+  assert.equal((await call('/api/jobs', wk, { method: 'DELETE' })).status, 403);
+  const cleared = await (await call('/api/jobs', api, { method: 'DELETE' })).json();
+  assert.ok(cleared.jobIds.includes(first.id) && cleared.jobIds.includes(second.id));
+  assert.equal((await (await call(`/api/jobs/${first.id}`, api)).json()).job.error, 'queue cleared');
+  assert.equal((await call(`/api/jobs/${first.id}/result`, wk, { method: 'POST', body: JSON.stringify({ worker: 'clear-test', ok: true }) })).status, 409);
 });

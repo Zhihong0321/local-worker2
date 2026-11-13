@@ -158,10 +158,17 @@ from the real worker's folder. PowerShell, from the repo root.
 
 All routes take `Authorization: Bearer <API_KEY>` (or `x-api-key`).
 
+Every job-creating POST (`/api/scan`, `/api/fetch`, `/api/shot`, `/api/audit`,
+`/api/lookup`, `/api/chat`, `/api/ads`) requires string fields `callerId` and
+`taskDescription`. Set `callerId` to the origin URL, IP address, or device name;
+`taskDescription` must be 1�50 characters after trimming. These are supplied by
+the caller and are not independently verified. They appear in the job and in
+`GET /api/scans`. Existing clients must add both fields or receive HTTP 400.
+
 **`POST /api/scan`** — queue a scan.
 
 ```json
-{ "keyword": "factory", "place": "Taman Daya", "max": 200, "wait": 600 }
+{ "callerId": "office-pc", "taskDescription": "Find factories", "keyword": "factory", "place": "Taman Daya", "max": 200, "wait": 600 }
 ```
 
 - `keyword`, `place`: at least one. `keyword` `business`, `factory` or `shop`
@@ -231,6 +238,7 @@ model is set up, `409` before the audit is done. The scores never come from the 
 (`/api/fetch/:id` is the same route).
 **`DELETE /api/scan/:id`** — cancel.
 **`GET /api/scans?status=running&type=web.fetch`** — recent jobs, without results.
+**`DELETE /api/jobs`** � clear all pending and running jobs. Returns `{ cleared, jobIds }`; active workers may continue executing, but their late results are rejected. Finished jobs remain in history.
 **`GET /api/workers`** — every worker seen: `live`, current `job`, `coolUntil`.
 **`GET /api/worker/package`** — the worker zip.
 

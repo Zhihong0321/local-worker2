@@ -63,12 +63,15 @@
 <pre><code>Authorization: Bearer &lt;API_KEY&gt;</code></pre>
 <p><code>x-api-key: &lt;API_KEY&gt;</code> works too. A missing or wrong key returns <code>401</code>.</p>
 
+<h2>Required job identification</h2>
+<p>Every job-creating POST (<code>/api/scan</code>, <code>/api/fetch</code>, <code>/api/shot</code>, <code>/api/audit</code>, <code>/api/lookup</code>, <code>/api/chat</code>, and <code>/api/ads</code>) requires <code>callerId</code> and <code>taskDescription</code> strings. Set <code>callerId</code> to the origin URL, IP address, or device name. Set <code>taskDescription</code> to 1–50 characters. These values are supplied by the caller and are not independently verified. They appear in the job and <code>GET /api/scans</code>. Missing or invalid values return 400; existing clients must be updated.</p>
+<p><code>DELETE /api/jobs</code> clears all pending and running jobs, returning <code>{ cleared, jobIds }</code>. Finished jobs remain in history. A running worker may continue its work, but its late result is rejected.</p>
 <h2 id="scan">Start a scan</h2>
 <p><span class="ep">POST</span><span class="path">/api/scan</span></p>
 <pre><code>curl -X POST https://YOUR-SERVICE/api/scan \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"keyword":"factory","place":"Taman Daya","max":200,"wait":600}'</code></pre>
+  -d '{"callerId":"office-pc","taskDescription":"API request","keyword":"factory","place":"Taman Daya","max":200,"wait":600}'</code></pre>
 <table>
   <tr><th>Field</th><th>Meaning</th></tr>
   <tr><td><code>keyword</code></td><td>Business type. <code>business</code>, <code>factory</code> or <code>shop</code> with a <code>place</code> sweeps that family's words. Any other keyword is one plain search, up to 300 results.</td></tr>
@@ -87,7 +90,7 @@
 <pre><code>curl -X POST https://YOUR-SERVICE/api/fetch \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"url":"https://example.com/article"}'</code></pre>
+  -d '{"callerId":"office-pc","taskDescription":"API request","url":"https://example.com/article"}'</code></pre>
 <table>
   <tr><th>Field</th><th>Meaning</th></tr>
   <tr><td><code>url</code></td><td>The page, http or https. Required. Workers refuse private and local addresses, including redirects to them.</td></tr>
@@ -119,7 +122,7 @@
 <pre><code>curl -X POST https://YOUR-SERVICE/api/shot \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"url":"https://example.com/contact","device":"mobile","find":"Call us"}'</code></pre>
+  -d '{"callerId":"office-pc","taskDescription":"API request","url":"https://example.com/contact","device":"mobile","find":"Call us"}'</code></pre>
 <table>
   <tr><th>Field</th><th>Meaning</th></tr>
   <tr><td><code>url</code></td><td>The page, http or https. Required. Workers refuse private and local addresses, for the page, its redirects and everything the page loads.</td></tr>
@@ -160,7 +163,7 @@
 <pre><code>curl -X POST https://YOUR-SERVICE/api/audit \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"url":"https://example.com/","maxPages":5,"botTest":true}'</code></pre>
+  -d '{"callerId":"office-pc","taskDescription":"API request","url":"https://example.com/","maxPages":5,"botTest":true}'</code></pre>
 <table>
   <tr><th>Field</th><th>Meaning</th></tr>
   <tr><td><code>url</code></td><td>Required http or https URL, at most 2048 characters. Normalized before queuing.</td></tr>
@@ -231,7 +234,7 @@
 <h3 id="advice">AI advice on an audit</h3>
 <p><span class="ep">POST</span><span class="path">/api/audit/{id}/advice</span></p>
 <p>Asks an AI model to read the audited pages and suggest concrete fixes: rewrites that quote the page, questions buyers ask that the page does not answer, and the five actions that matter most for the site. The cloud agy hub (Gemini Flash, sandboxed) answers first; a backup OpenAI-compatible model (DeepSeek by default) answers when agy fails. A suggestion whose quote is not on the page is dropped. Scores never come from the AI.</p>
-<pre><code>curl -X POST https://YOUR-SERVICE/api/audit/JOB_ID/advice   -H "Authorization: Bearer $API_KEY" -d '{"wait":60}'</code></pre>
+<pre><code>curl -X POST https://YOUR-SERVICE/api/audit/JOB_ID/advice   -H "Authorization: Bearer $API_KEY" -d '{"callerId":"office-pc","taskDescription":"API request","wait":60}'</code></pre>
 <p>Runs once per audit and takes a minute or two. The call waits 20 seconds by default (<code>wait</code>, up to 240) and answers <code>202</code> while it runs; <code>GET /api/audit/{id}/advice?wait=60</code> picks it up, and the job itself carries it as <code>job.advice</code>. <code>404</code> for an unknown audit, <code>409</code> before the audit is done, <code>503</code> when the service has no model set up (<code>AGY_URL</code>/<code>AGY_TOKEN</code> or <code>ADVICE_BACKUP_URL</code>/<code>ADVICE_BACKUP_KEY</code>). A failed run is started again on the next POST.</p>
 <pre><code>{ "jobId": "...", "advice": { "status": "done", "startedAt": "...", "finishedAt": "...", "error": null,
   "result": {
@@ -249,7 +252,7 @@
 <pre><code>curl -X POST https://YOUR-SERVICE/api/lookup \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"handler":"MY-cims.cidb.gov.my/w1","keyword":"Gamuda"}'</code></pre>
+  -d '{"callerId":"office-pc","taskDescription":"API request","handler":"MY-cims.cidb.gov.my/w1","keyword":"Gamuda"}'</code></pre>
 <table>
   <tr><th>Field</th><th>Meaning</th></tr>
   <tr><td><code>handler</code></td><td>Required library id from <code>GET /api/handlers</code>. Only tiers 1 and 2 can run.</td></tr>
@@ -321,7 +324,7 @@
 <pre><code>curl -X POST https://YOUR-SERVICE/api/chat \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"prompt":"Malaysia Top News today","wait":60}'</code></pre>
+  -d '{"callerId":"office-pc","taskDescription":"API request","prompt":"Malaysia Top News today","wait":60}'</code></pre>
 <table>
   <tr><th>Field</th><th>Meaning</th></tr>
   <tr><td><code>prompt</code></td><td>The question or prompt to send to ChatGPT. Required.</td></tr>
@@ -334,7 +337,7 @@
 <h2 id="ads">Ads research</h2>
 <p><span class="ep">POST</span><span class="path">/api/ads</span></p>
 <p>Who advertises in one country and industry, read from Google's Ads Transparency Center and Meta's Ad Library by a worker PC on its own line. Google needs no browser; Meta's Ad Library is opened in the PC's Edge or Chrome, headless. A search takes about a minute. The result lists every advertiser found, joined across both libraries by name or website.</p>
-<pre><code>curl -X POST https://YOUR-SERVICE/api/ads   -H "Authorization: Bearer $API_KEY"   -H "Content-Type: application/json"   -d '{"country":"Malaysia","industry":"solar","wait":300}'</code></pre>
+<pre><code>curl -X POST https://YOUR-SERVICE/api/ads   -H "Authorization: Bearer $API_KEY"   -H "Content-Type: application/json"   -d '{"callerId":"office-pc","taskDescription":"API request","country":"Malaysia","industry":"solar","wait":300}'</code></pre>
 <table>
   <tr><th>Field</th><th>Meaning</th></tr>
   <tr><td><code>country</code></td><td>A country name or 2-letter ISO code (<code>Malaysia</code>, <code>MY</code>). Required. <code>400</code> when it is neither.</td></tr>
@@ -408,7 +411,7 @@
 <pre><code># 1. start the scan, waiting up to 10 minutes
 curl -X POST https://YOUR-SERVICE/api/scan \
   -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
-  -d '{"keyword":"factory","place":"Taman Daya","max":200,"wait":600}'
+  -d '{"callerId":"office-pc","taskDescription":"API request","keyword":"factory","place":"Taman Daya","max":200,"wait":600}'
 
 # 2. if the answer was 202, poll until it finishes
 curl -H "Authorization: Bearer $API_KEY" \

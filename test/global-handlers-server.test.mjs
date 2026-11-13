@@ -24,7 +24,7 @@ test('country=ALL lists the five global handlers; a country query does not inclu
 });
 
 test('a lookup for a global handler carries the handler file and the domain as its keyword', async () => {
-  const res = await fetch(`${base}/api/lookup`, { method: 'POST', headers: api, body: JSON.stringify({ handler: 'ALL-dns/w1', keyword: 'example.com', wait: 0 }) });
+  const res = await fetch(`${base}/api/lookup`, { method: 'POST', headers: api, body: JSON.stringify({ callerId: 'test', taskDescription: 'Test lookup', handler: 'ALL-dns/w1', keyword: 'example.com', wait: 0 }) });
   assert.equal(res.status, 202);
   const { job } = await res.json();
   assert.equal(job.payload.handler, 'ALL-dns/w1');

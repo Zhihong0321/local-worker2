@@ -124,7 +124,7 @@ test('parseJson takes fenced, reasoned or padded answers', () => {
 
 test('POST /api/audit/:id/advice: 404, 409 until done, then advice on the job', async () => {
   assert.equal((await fetch(base + '/api/audit/0123456789ab/advice', { method: 'POST', headers: api })).status, 404);
-  const job = (await (await fetch(base + '/api/audit', { method: 'POST', headers: api, body: JSON.stringify({ url: 'https://solar.example/', worker: 'pc-adv', wait: 0 }) })).json()).job;
+  const job = (await (await fetch(base + '/api/audit', { method: 'POST', headers: api, body: JSON.stringify({ callerId: 'test', taskDescription: 'Test audit', url: 'https://solar.example/', worker: 'pc-adv', wait: 0 }) })).json()).job;
   assert.equal((await fetch(`${base}/api/audit/${job.id}/advice`, { method: 'POST', headers: api })).status, 409);
   const claimed = (await (await fetch(base + '/api/jobs/next?worker=pc-adv&types=site.audit&wait=1', { headers: wk })).json()).job;
   await fetch(`${base}/api/jobs/${claimed.id}/result`, { method: 'POST', headers: wk, body: JSON.stringify({ worker: 'pc-adv', type: 'site.audit', ok: true, result: RESULT }) });
@@ -141,6 +141,6 @@ test('POST /api/audit/:id/advice: 404, 409 until done, then advice on the job', 
 });
 
 test('a scan id is not an audit', async () => {
-  const scan = (await (await fetch(base + '/api/scan', { method: 'POST', headers: api, body: JSON.stringify({ keyword: 'cafe', place: 'Johor', worker: 'nobody' }) })).json()).job;
+  const scan = (await (await fetch(base + '/api/scan', { method: 'POST', headers: api, body: JSON.stringify({ callerId: 'test', taskDescription: 'Test scan', keyword: 'cafe', place: 'Johor', worker: 'nobody' }) })).json()).job;
   assert.equal((await fetch(`${base}/api/audit/${scan.id}/advice`, { method: 'POST', headers: api })).status, 404);
 });

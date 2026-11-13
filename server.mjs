@@ -223,7 +223,7 @@ function startCheck(selected) {
       try {
         const keyword = str(handler.canary?.[side]).trim();
         if (!keyword || keyword.length > 200) throw new Error('missing or invalid canary keyword');
-        const job = add(lookupPayload(handler, keyword), LOOKUP_DEFAULT_TIMEOUT_MS, newId(), LOOKUP);
+        const job = add({ ...lookupPayload(handler, keyword), callerId: 'service:handler-check', taskDescription: 'Handler health check' }, LOOKUP_DEFAULT_TIMEOUT_MS, newId(), LOOKUP);
         job.check = { run: checkRun.id, side };
         verdict[side] = { job: job.id, state: 'pending', reason: null };
         wake(job);
@@ -501,16 +501,34 @@ function readAds(body) {
 function add(payload, timeoutMs, id = newId(), type = SCAN) {
   const job = {
     id, type, payload, timeoutMs, status: 'pending', worker: null, attempts: 0,
+    callerId: payload.callerId, taskDescription: payload.taskDescription,
     createdAt: now(), startedAt: null, finishedAt: null, leaseUntil: null, result: null, error: null,
   };
   jobs.set(id, job);
   return job;
 }
 
-function create(payload, timeoutMs, type) {
+function create(payload, timeoutMs, type, body) {
+  const callerId = typeof body.callerId === 'string' ? body.callerId.trim() : '';
+  const taskDescription = typeof body.taskDescription === 'string' ? body.taskDescription.trim() : '';
+  if (!callerId) throw Object.assign(new Error('callerId is required'), { status: 400 });
+  if (!taskDescription || taskDescription.length > 50) throw Object.assign(new Error('taskDescription is required and must be 1 to 50 characters'), { status: 400 });
+  payload = { ...payload, callerId, taskDescription };
   const job = add(payload, timeoutMs, newId(), type);
   wake(job);
   return job;
+}
+
+function clearQueue() {
+  const cleared = [];
+  const active = [...jobs.values()].filter((job) => job.status === 'pending' || job.status === 'running');
+  // Prevent finishing a lookup from dispatching another job while clearing.
+  for (const job of active) job.status = 'failed';
+  for (const job of active) {
+    finishJob(job, false, null, 'queue cleared');
+    cleared.push(job.id);
+  }
+  return cleared;
 }
 
 /** Resolves with the job once it is done or failed, or as it stands after `ms`. */
@@ -730,7 +748,7 @@ async function route(req, res) {
     if (!Number.isInteger(timeoutMs) || timeoutMs < LOOKUP_MIN_TIMEOUT_MS || timeoutMs > LOOKUP_MAX_TIMEOUT_MS) {
       json(res, 400, { error: `timeoutMs is from ${LOOKUP_MIN_TIMEOUT_MS} to ${LOOKUP_MAX_TIMEOUT_MS}` }); return;
     }
-    const job = create(lookupPayload(handler, keyword, str(body.worker).trim()), timeoutMs, LOOKUP);
+    const job = create(lookupPayload(handler, keyword, str(body.worker).trim()), timeoutMs, LOOKUP, body);
     const waitSec = Number(body.wait ?? q.get('wait') ?? NaN);
     const waitMs = Number.isFinite(waitSec) ? waitSec * 1000 : timeoutMs + LOOKUP_LEASE_GRACE_MS;
     const waited = await waitFor(job, Math.min(MAX_CALLER_WAIT_MS, waitMs), res);
@@ -742,7 +760,7 @@ async function route(req, res) {
     const body = await readJson(req);
     const scan = readScan(body);
     if (scan.error) { json(res, 400, { error: scan.error }); return; }
-    const job = create(scan.payload, scan.timeoutMs, SCAN);
+    const job = create(scan.payload, scan.timeoutMs, SCAN, body);
     const waitSec = Number(body.wait ?? q.get('wait'));
     const waited = await waitFor(job, Math.min(MAX_CALLER_WAIT_MS, Number.isFinite(waitSec) ? waitSec * 1000 : 0), res);
     if (res.destroyed) return;
@@ -754,7 +772,7 @@ async function route(req, res) {
     const body = await readJson(req);
     const page = readFetch(body);
     if (page.error) { json(res, 400, { error: page.error }); return; }
-    const job = create(page.payload, page.timeoutMs, FETCH);
+    const job = create(page.payload, page.timeoutMs, FETCH, body);
     // Answers in the same call unless the caller says otherwise, like Jina Reader; wait 0 returns the id at once.
     const waitSec = Number(body.wait ?? q.get('wait') ?? NaN);
     const waitMs = Number.isFinite(waitSec) ? waitSec * 1000 : page.timeoutMs + FETCH_LEASE_GRACE_MS;
@@ -768,7 +786,7 @@ async function route(req, res) {
     const body = await readJson(req);
     const shot = readShot(body);
     if (shot.error) { json(res, 400, { error: shot.error }); return; }
-    const job = create(shot.payload, shot.timeoutMs, SHOT);
+    const job = create(shot.payload, shot.timeoutMs, SHOT, body);
     // Like a fetch: answers in the same call unless the caller says otherwise; wait 0 returns the id at once.
     const waitSec = Number(body.wait ?? q.get('wait') ?? NaN);
     const waitMs = Number.isFinite(waitSec) ? waitSec * 1000 : shot.timeoutMs + SHOT_LEASE_GRACE_MS;
@@ -782,7 +800,7 @@ async function route(req, res) {
     const body = await readJson(req);
     const audit = readAudit(body);
     if (audit.error) { json(res, 400, { error: audit.error }); return; }
-    const job = create(audit.payload, audit.timeoutMs, AUDIT);
+    const job = create(audit.payload, audit.timeoutMs, AUDIT, body);
     // Wait for the report by default; wait 0 returns the id at once.
     const waitSec = Number(body.wait ?? q.get('wait') ?? NaN);
     const waitMs = Number.isFinite(waitSec) ? waitSec * 1000 : audit.timeoutMs + AUDIT_LEASE_GRACE_MS;
@@ -796,7 +814,7 @@ async function route(req, res) {
     const body = await readJson(req);
     const chat = readChat(body);
     if (chat.error) { json(res, 400, { error: chat.error }); return; }
-    const job = create(chat.payload, chat.timeoutMs, CHAT);
+    const job = create(chat.payload, chat.timeoutMs, CHAT, body);
     const waitSec = Number(body.wait ?? q.get('wait') ?? NaN);
     const waitMs = Number.isFinite(waitSec) ? waitSec * 1000 : chat.timeoutMs + CHAT_LEASE_GRACE_MS;
     const waited = await waitFor(job, Math.min(MAX_CALLER_WAIT_MS, waitMs), res);
@@ -809,7 +827,7 @@ async function route(req, res) {
     const body = await readJson(req);
     const ads = readAds(body);
     if (ads.error) { json(res, 400, { error: ads.error }); return; }
-    const job = create(ads.payload, ads.timeoutMs, ADS);
+    const job = create(ads.payload, ads.timeoutMs, ADS, body);
     // Waits for the research by default; wait 0 returns the id at once.
     const waitSec = Number(body.wait ?? q.get('wait') ?? NaN);
     const waitMs = Number.isFinite(waitSec) ? waitSec * 1000 : ads.timeoutMs + ADS_LEASE_GRACE_MS;
@@ -860,6 +878,12 @@ async function route(req, res) {
     if (job.status === 'done' || job.status === 'failed') { json(res, 409, { error: `job is already ${job.status}` }); return; }
     finishJob(job, false, null, 'cancelled by the caller');
     json(res, 200, { job: view(job) });
+    return;
+  }
+
+  if (method === 'DELETE' && p === '/api/jobs') {
+    const cleared = clearQueue();
+    json(res, 200, { cleared: cleared.length, jobIds: cleared });
     return;
   }
 
