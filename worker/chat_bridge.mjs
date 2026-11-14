@@ -11,6 +11,7 @@ const HOST = '127.0.0.1';
 const clients = new Set();
 let nextClient = 0;
 const answerWaiters = new Map();
+const isReady = (client) => client.ready === true && Date.now() - client.readyAt < 12000;
 
 function sendJson(res, status, data) {
   const body = Buffer.from(JSON.stringify(data));
@@ -54,8 +55,8 @@ const server = http.createServer(async (req, res) => {
 
   // Status check
   if (method === 'GET' && (pathname === '/health' || pathname === '/status')) {
-    sendJson(res, 200, { ok: true, connected: clients.size > 0,
-      browsers: [...clients].map((client) => ({ id: client.id || null, name: client.name || 'Unknown browser' })) });
+    sendJson(res, 200, { ok: true, connected: clients.size > 0, ready: [...clients].some(isReady),
+      browsers: [...clients].map((client) => ({ id: client.id || null, name: client.name || 'Unknown browser', ready: isReady(client) })) });
     return;
   }
 
@@ -71,13 +72,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (!clients.size) {
+    const connected = [...clients].filter(isReady);
+    if (!connected.length) {
       sendJson(res, 503, { ok: false, error: 'no active ChatGPT tab connected to local worker on https://chatgpt.com' });
       return;
     }
 
-    const connected = [...clients];
     const client = connected[nextClient++ % connected.length];
+    client.ready = false;
     const task = { id, action: 'prompt', prompt };
 
     const answer = await new Promise((resolve) => {
@@ -211,6 +213,7 @@ server.on('upgrade', (req, socket) => {
             client.id = String(msg.id || '').slice(0, 100);
             client.name = String(msg.name || 'Unknown browser').slice(0, 40);
           }
+          if (msg.type === 'readiness') { client.ready = msg.ready === true; client.readyAt = Date.now(); }
           if (msg.type === 'done' || msg.type === 'error') {
             const waiter = answerWaiters.get(msg.id);
             if (waiter && waiter.client === client) {

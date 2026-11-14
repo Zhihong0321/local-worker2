@@ -308,6 +308,7 @@ function evict() {
 
 function claimable(job, worker, types) {
   return job.status === 'pending' && types.includes(job.type) && (!job.payload.worker || job.payload.worker === worker)
+    && (job.type !== CHAT || (workers.get(worker)?.chatReadyUntil ?? 0) > Date.now())
     && (job.type !== CHAT || (chatRetryAfter.get(worker) ?? 0) <= Date.now())
     && (job.type !== LOOKUP || (Date.now() - Date.parse(job.createdAt) <= queueTimeout(job)
       && ![...jobs.values()].some((j) => j.type === LOOKUP && j.status === 'running' && j.payload.host === job.payload.host)));
@@ -617,6 +618,7 @@ function liveWorkers() {
   const t = Date.now();
   return [...workers.values()].map((w) => ({
     ...w,
+    chatReady: (w.chatReadyUntil ?? 0) > t,
     live: t - Date.parse(w.lastSeen) < WORKER_LIVE_MS,
     chatBrowsers: t - Date.parse(w.lastSeen) < WORKER_LIVE_MS ? (w.chatBrowsers ?? null) : null,
     coolUntil: w.coolUntil > t ? new Date(w.coolUntil).toISOString() : null,
@@ -656,6 +658,7 @@ async function route(req, res) {
     if (!types.length) { res.writeHead(204).end(); return; }
     const w = touch(worker, callerIp(req));
     w.types = types;
+    w.chatReadyUntil = q.get('chatReady') === '1' && types.includes(CHAT) ? Date.now() + 30000 : 0;
     if (q.has('chatBrowsers')) {
       try { const browsers = JSON.parse(q.get('chatBrowsers')); if (browsers === null) w.chatBrowsers = null; else if (Array.isArray(browsers)) w.chatBrowsers = browsers.filter((b) => typeof b === 'string').map((b) => b.slice(0, 40)).slice(0, 20); } catch { }
     }

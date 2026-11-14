@@ -3,6 +3,7 @@ const WS_URL = 'ws://127.0.0.1:8765';
 let socket = null;
 let isConnected = false;
 let isBusy = false;
+let reportingStatus = false;
 const connectionId = crypto.randomUUID();
 
 async function browserName() {
@@ -37,6 +38,23 @@ async function updateStatusBadge() {
   }
 }
 
+async function reportReadiness() {
+  if (reportingStatus || !socket || socket.readyState !== WebSocket.OPEN) return;
+  reportingStatus = true;
+  const open = socket;
+  try {
+    const tabs = await chrome.tabs.query({ url: ['https://chatgpt.com/*', 'https://chat.openai.com/*'] });
+    let ready = false;
+    if (!isBusy) for (const tab of tabs) {
+      try {
+        const response = await Promise.race([chrome.tabs.sendMessage(tab.id, { action: 'readiness' }), new Promise((resolve) => setTimeout(() => resolve(null), 1500))]);
+        if (response?.ready) { ready = true; break; }
+      } catch { }
+    }
+    if (open.readyState === WebSocket.OPEN) open.send(JSON.stringify({ type: 'readiness', ready }));
+  } finally { reportingStatus = false; }
+}
+
 function connectWebSocket() {
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
     return;
@@ -53,6 +71,7 @@ function connectWebSocket() {
         if (openSocket.readyState === WebSocket.OPEN) openSocket.send(JSON.stringify({ type: 'hello', id: connectionId, name }));
       });
       updateStatusBadge();
+      reportReadiness();
       // Chrome stops an idle extension service worker after 30 s, which closes this socket and leaves the worker
       // with "no active ChatGPT tab". A message over the socket every 20 s keeps it running (Chrome 116+).
       const open = socket;
@@ -172,7 +191,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 setInterval(() => {
   if (!isConnected) connectWebSocket();
-  else updateStatusBadge();
+  else { updateStatusBadge(); reportReadiness(); }
 }, 4000);
 
 connectWebSocket();

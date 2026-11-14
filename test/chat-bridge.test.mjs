@@ -17,6 +17,11 @@ test('bridge distributes requests between browsers and keeps the remaining conne
   const [started] = await once(bridge.stdout, 'data');
   assert.match(started.toString(), /CHAT_BRIDGE_READY/);
   const base = `http://127.0.0.1:${port}`;
+  const unready = new WebSocket(`ws://127.0.0.1:${port}`);
+  await new Promise((resolve) => unready.addEventListener('open', resolve, { once: true }));
+  const rejected = await fetch(`${base}/ask`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'not-ready', prompt: 'hello' }) });
+  assert.equal(rejected.status, 503);
+  unready.close();
   async function browser(name) {
     const ws = new WebSocket(`ws://127.0.0.1:${port}`);
     await new Promise((resolve, reject) => {
@@ -26,7 +31,9 @@ test('bridge distributes requests between browsers and keeps the remaining conne
     ws.addEventListener('message', (event) => {
       const task = JSON.parse(event.data);
       ws.send(JSON.stringify({ id: task.id, type: 'done', ok: true, answer: name }));
+      ws.send(JSON.stringify({ type: 'readiness', ready: true }));
     });
+    ws.send(JSON.stringify({ type: 'readiness', ready: true }));
     t.after(() => ws.close());
     return ws;
   }

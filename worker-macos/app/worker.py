@@ -669,7 +669,7 @@ def remove_linkedin_leftovers():
 # Run one job script in its own process; it gets the payload in a file and
 # prints one JSON line. The answer is the last line: a library that prints to
 # stdout must not break it.
-def run_job_script(args, timeout_ms, env=None, timeout_message='the job timed out', hold_stdin=False, kill_tree=False):
+def run_job_script(args, timeout_ms, env=None, timeout_message='the job timed out', hold_stdin=False, kill_tree=False, heartbeat=False):
     # hold_stdin: a pipe held open, never written; the child sees it close if this worker dies.
     # kill_tree: the job runs in a process group of its own and the whole group is ended on timeout,
     # so a browser it started does not outlive it (the Windows worker uses taskkill /T for the same).
@@ -686,6 +686,20 @@ def run_job_script(args, timeout_ms, env=None, timeout_message='the job timed ou
                     pass
                 child.communicate()
                 raise RuntimeError(timeout_message)
+            proc = subprocess.CompletedProcess(args, child.returncode, out, err)
+        elif heartbeat:
+            child = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, stdin=hold[0] if hold else None)
+            deadline = time.monotonic() + timeout_ms / 1000
+            while True:
+                try:
+                    out, err = child.communicate(timeout=min(1, max(0.001, deadline - time.monotonic())))
+                    break
+                except subprocess.TimeoutExpired:
+                    send_beat()
+                    if time.monotonic() >= deadline:
+                        child.kill()
+                        child.communicate()
+                        raise RuntimeError(timeout_message)
             proc = subprocess.CompletedProcess(args, child.returncode, out, err)
         else:
             proc = subprocess.run(args, capture_output=True, timeout=timeout_ms / 1000, env=env, stdin=hold[0] if hold else None)
@@ -923,7 +937,7 @@ def chat_tab():
     try:
         with urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=2) as res:
             body = json.loads(res.read().decode('utf-8', 'replace') or '{}')
-        return bool(body.get('connected'))
+        return bool(body.get('ready'))
     except (OSError, ValueError):
         return False
 
@@ -934,7 +948,7 @@ def get_chat_browsers():
         with urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=2) as res:
             body = json.loads(res.read().decode('utf-8', 'replace') or '{}')
         browsers = body.get('browsers')
-        return [str(b.get('name', 'Unknown browser')) for b in browsers] if isinstance(browsers, list) else None
+        return [str(b.get('name', 'Unknown browser')) for b in browsers if b.get('ready')] if isinstance(browsers, list) else None
     except (OSError, ValueError):
         return None
 
@@ -948,7 +962,7 @@ def invoke_chat(job):
     try:
         timeout_ms = to_int(job.get('timeoutMs'))
         line, err = run_job_script([str(NodeExe), str(SHARED / 'chat.mjs'), str(file)], timeout_ms + 10000,
-                                   timeout_message=f'chat took longer than {timeout_ms // 1000} s')
+                                   timeout_message=f'chat took longer than {timeout_ms // 1000} s', heartbeat=True)
         if not line:
             raise RuntimeError(f'chat.mjs answered nothing: {err}')
         r = json.loads(line)
@@ -1082,7 +1096,7 @@ def main():
                 time.sleep(min(25, max(1, int(rest_until - time.time()))))
                 continue
             browsers = get_chat_browsers()
-            chat_query = '&chatBrowsers=' + urllib.parse.quote(json.dumps(browsers), safe='')
+            chat_query = '&chatReady=' + ('1' if 'chat.ask' in Types.split(',') else '0') + '&chatBrowsers=' + urllib.parse.quote(json.dumps(browsers), safe='')
             r = invoke_hub('GET', f"/api/jobs/next?worker={urllib.parse.quote(Name, safe='')}&types={Types}&wait=25{chat_query}", None, 45)
             if r.status == 204:
                 backoff = 5

@@ -83,6 +83,11 @@
     } catch {}
   }
   window.__LGW_CHATGPT_HANDLER = (request, sender, sendResponse) => {
+    if (request.action === 'readiness') {
+      const input = document.querySelector('#prompt-textarea, div[contenteditable="true"], textarea');
+      sendResponse({ ready: !!input && !input.disabled && input.getAttribute('contenteditable') !== 'false' && input.getClientRects().length > 0 });
+      return;
+    }
     if (request.action === 'prompt') {
       executePrompt(request, sendResponse);
       return true; // Keep channel open for asynchronous sendResponse

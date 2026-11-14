@@ -828,7 +828,7 @@ function Start-ChatBridge {
 function Test-ChatTab {
   try {
     $h = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/health' -TimeoutSec 2
-    return [bool]$h.connected
+    return [bool]$h.ready
   } catch { return $false }
 }
 
@@ -837,7 +837,7 @@ function Get-ChatBrowsers {
   try {
     $h = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/health' -TimeoutSec 2
     if ($null -eq $h.browsers) { return $null }
-    return ,@($h.browsers | ForEach-Object { [string]$_.name })
+    return ,@($h.browsers | Where-Object { $_.ready } | ForEach-Object { [string]$_.name })
   } catch { return $null }
 }
 
@@ -860,9 +860,13 @@ function Invoke-Chat($Job) {
     $proc = [Diagnostics.Process]::Start($psi)
     $out = $proc.StandardOutput.ReadToEndAsync()
     $err = $proc.StandardError.ReadToEndAsync()
-    if (-not $proc.WaitForExit([int]$Job.timeoutMs + 10000)) {
-      try { $proc.Kill() } catch { }
-      throw "chat took longer than $([int]($Job.timeoutMs / 1000)) s"
+    $deadline = (Get-Date).AddMilliseconds([int]$Job.timeoutMs + 10000)
+    while (-not $proc.WaitForExit(1000)) {
+      Send-Beat
+      if ((Get-Date) -ge $deadline) {
+        try { $proc.Kill() } catch { }
+        throw "chat took longer than $([int]($Job.timeoutMs / 1000)) s"
+      }
     }
     $proc.WaitForExit()
     $line = @($out.Result.Trim() -split "`r?`n")[-1]
@@ -1005,7 +1009,7 @@ while ($true) {
     )) -join ','
     if (-not $script:Types) { Start-Sleep -Seconds ([Math]::Min(25, [Math]::Max(1, [int]($restUntil - (Get-Date)).TotalSeconds))); continue }
     $chatBrowsers = Get-ChatBrowsers
-    $chatQuery = '&chatBrowsers=' + [uri]::EscapeDataString((ConvertTo-Json -InputObject $chatBrowsers -Compress))
+    $chatQuery = '&chatReady=' + $(if ($script:Types.Split(',') -contains 'chat.ask') { '1' } else { '0' }) + '&chatBrowsers=' + [uri]::EscapeDataString((ConvertTo-Json -InputObject $chatBrowsers -Compress))
     $r = Invoke-Hub 'GET' ("/api/jobs/next?worker=$([uri]::EscapeDataString($Name))&types=$($script:Types)&wait=25$chatQuery") $null 45
     if ($r.status -eq 204) { $backoff = 5; continue }
     if ($r.status -eq 401 -or $r.status -eq 403) {

@@ -653,7 +653,7 @@ test('chat round trip: only a worker asking for chat.ask gets it', async () => {
   await new Promise((r) => setTimeout(r, 100));
   const scanOnly = await call('/api/jobs/next?worker=pc-chat&types=gmap.scan&wait=0', wk);
   if (scanOnly.status === 200) assert.notEqual((await scanOnly.json()).job.type, 'chat.ask');
-  const next = await call('/api/jobs/next?worker=pc-chat&types=chat.ask&wait=1', wk);
+  const next = await call('/api/jobs/next?worker=pc-chat&types=chat.ask&wait=1&chatReady=1', wk);
   assert.equal(next.status, 200);
   const { job } = await next.json();
   assert.equal(job.type, 'chat.ask');
@@ -670,14 +670,14 @@ test('chat round trip: only a worker asking for chat.ask gets it', async () => {
 test('chat bridge disconnect before delivery requeues the job for another worker', async () => {
   const posted = call('/api/chat', api, { method: 'POST', body: JSON.stringify({ prompt: 'Retry safely', wait: 3 }) });
   await new Promise((r) => setTimeout(r, 100));
-  const first = (await (await call('/api/jobs/next?worker=chat-disconnected&types=chat.ask&wait=0', wk)).json()).job;
+  const first = (await (await call('/api/jobs/next?worker=chat-disconnected&types=chat.ask&wait=0&chatReady=1', wk)).json()).job;
   const failed = await call(`/api/jobs/${first.id}/result`, wk, { method: 'POST', body: JSON.stringify({
     worker: 'chat-disconnected', ok: false,
     error: 'no active ChatGPT tab connected to local worker on https://chatgpt.com',
   }) });
   assert.equal((await failed.json()).requeued, true);
   assert.equal((await call('/api/jobs/next?worker=chat-disconnected&types=chat.ask&wait=0', wk)).status, 204);
-  const next = (await (await call('/api/jobs/next?worker=chat-ready&types=chat.ask&wait=0', wk)).json()).job;
+  const next = (await (await call('/api/jobs/next?worker=chat-ready&types=chat.ask&wait=0&chatReady=1', wk)).json()).job;
   assert.equal(next.id, first.id);
   assert.equal(next.attempts, 1);
   await call(`/api/jobs/${next.id}/result`, wk, { method: 'POST', body: JSON.stringify({ worker: 'chat-ready', ok: true, result: { answer: 'ready' } }) });
@@ -697,6 +697,15 @@ test('worker reports connected chat browsers to the hub', async () => {
   await call('/api/jobs/heartbeat', wk, { method: 'POST', body: JSON.stringify({ worker: 'browser-status', chatBrowsers: null }) });
   worker = (await (await call('/api/workers', api)).json()).workers.find((w) => w.name === 'browser-status');
   assert.equal(worker.chatBrowsers, null);
+});
+
+test('chat jobs wait for an explicitly ready worker', async () => {
+  const job = (await (await call('/api/chat', api, { method: 'POST', body: JSON.stringify({ prompt: 'Ready?', worker: 'readiness-test', wait: 0 }) })).json()).job;
+  assert.equal((await call('/api/jobs/next?worker=readiness-test&types=chat.ask&wait=0', wk)).status, 204);
+  assert.equal((await call('/api/jobs/next?worker=readiness-test&types=chat.ask&wait=0&chatReady=0', wk)).status, 204);
+  const claimed = (await (await call('/api/jobs/next?worker=readiness-test&types=chat.ask&wait=0&chatReady=1', wk)).json()).job;
+  assert.equal(claimed.id, job.id);
+  await call(`/api/jobs/${job.id}/result`, wk, { method: 'POST', body: JSON.stringify({ worker: 'readiness-test', ok: true, result: { answer: 'yes' } }) });
 });
 
 
