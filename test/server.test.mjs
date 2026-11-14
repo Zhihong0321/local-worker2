@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url';
 
 process.env.API_KEY = 'test-api-key-0123456789';
 process.env.HANDLERS_DIR = fileURLToPath(new URL('./fixtures/handlers/', import.meta.url));
-process.env.HANDLER_CHECK_INTERVAL_MS = '0';
 const { start, workerKey } = await import('../server.mjs');
 const server = await start(0);
 const base = `http://localhost:${server.address().port}`;
@@ -376,7 +375,8 @@ test('handler index has filters, no source and initially unknown health', async 
   assert.deepEqual((await (await call('/api/handlers?country=SG&host=cims.cidb.gov.my', api)).json()).handlers, []);
   assert.equal((await call('/api/handlers', wk)).status, 403);
   assert.equal((await call('/api/lookup', wk, { method: 'POST', body: '{}' })).status, 403);
-  assert.deepEqual(await (await call('/api/handlers/check', api)).json(), { run: null });
+  assert.equal((await call('/api/handlers/check', api)).status, 404);
+  assert.equal((await call('/api/handlers/check', api, { method: 'POST', body: '{}' })).status, 404);
 });
 
 test('lookup round trip waits by default and includes source, version and result provenance', async () => {
@@ -486,13 +486,13 @@ test('layout_changed is a normal result that immediately marks handler health br
   assert.equal(entry.health.checked_at, done.finishedAt);
 });
 
-test('a failed lookup is recorded but does not judge; broken stays until a canary passes', async () => {
+test('a failed lookup is recorded but does not judge; broken remains broken', async () => {
   for (const failure of [true, false]) {
     await postLookup(lookupA, { worker: 'pc-health' });
     const { job } = await (await pollLookup('pc-health')).json();
     await answerLookup(job, notFound, failure ? { ok: false, error: 'handler threw: test error' } : {});
     const entry = (await (await call('/api/handlers', api)).json()).handlers.find((h) => h.id === lookupA);
-    // The layout_changed test above left it broken; the canary test below clears it.
+    // The layout_changed test above left it broken.
     assert.equal(entry.health.state, 'broken');
     assert.equal(entry.health.broken_reason, 'layout_changed');
     assert.equal(entry.health.last_reason, failure ? 'handler threw: test error' : null);
@@ -511,50 +511,6 @@ test('lookup result after restart is filed without source and fills omitted prov
   assert.equal(job.timeoutMs, 150000);
   assert.deepEqual(job.payload, payload);
   assert.deepEqual(job.result, { ...body.result, handler: lookupA, version: payload.version, worker: body.worker });
-});
-
-test('canaries require both correct sides, preserve failures and reject overlapping checks', async () => {
-  const response = await call('/api/handlers/check', api, { method: 'POST', body: '{}' });
-  assert.equal(response.status, 202);
-  const { run } = await response.json();
-  assert.equal(run.handlers.length, 3);
-  assert.deepEqual(run.counts, { ok: 0, broken: 0, pending: 3 });
-  assert.equal((await call('/api/handlers/check', api, { method: 'POST', body: '{}' })).status, 409);
-  for (let i = 0; i < 6; i++) {
-    const { job } = await (await pollLookup('pc-canary')).json();
-    const entry = fixtureIndex.handlers.find((h) => h.id === job.payload.handler);
-    const side = job.payload.keyword === entry.canary.found ? 'found' : 'not_found';
-    assert.deepEqual(Object.keys(job.payload).sort(), ['callerId', 'handler', 'host', 'keyword', 'source', 'taskDescription', 'version']);
-    const answer = { status: side, reason: null, records: side === 'found' && entry.id !== lookupB ? [{ name: job.payload.keyword }] : [] };
-    await answerLookup(job, answer);
-  }
-  const { run: finished } = await (await call('/api/handlers/check', api)).json();
-  assert.equal(finished.id, run.id);
-  assert.ok(finished.started);
-  assert.ok(finished.finished);
-  assert.deepEqual(finished.counts, { ok: 2, broken: 1, pending: 0 });
-  assert.equal(finished.handlers.find((h) => h.handler === lookupA).state, 'ok');
-  const broken = finished.handlers.find((h) => h.handler === lookupB);
-  assert.equal(broken.state, 'broken');
-  assert.match(broken.reason, /found: expected found with at least one record/);
-  const entry = (await (await call('/api/handlers', api)).json()).handlers.find((h) => h.id === lookupB);
-  assert.equal(entry.health.state, 'broken');
-  assert.match(entry.health.last_reason, /found:/);
-});
-
-test('a targeted canary checks only that handler and requires not_found on the negative side', async () => {
-  assert.equal((await call('/api/handlers/check', api, { method: 'POST', body: '{"handler":"missing"}' })).status, 404);
-  assert.equal((await call('/api/handlers/check', api, { method: 'POST', body: '{"handler":"AU-asx.com/w1"}' })).status, 422);
-  const { run } = await (await call('/api/handlers/check', api, { method: 'POST', body: JSON.stringify({ handler: lookupA }) })).json();
-  assert.equal(run.handlers.length, 1);
-  for (let i = 0; i < 2; i++) {
-    const { job } = await (await pollLookup('pc-target-check')).json();
-    assert.equal(job.payload.handler, lookupA);
-    await answerLookup(job, { status: 'found', records: [{ name: 'Gamuda' }] });
-  }
-  const { run: done } = await (await call('/api/handlers/check', api)).json();
-  assert.deepEqual(done.counts, { ok: 0, broken: 1, pending: 0 });
-  assert.match(done.handlers[0].reason, /not_found: expected not_found/);
 });
 
 test('lookup lease expiry wakes an already waiting worker and ordinary queued lookups time out', async (t) => {
@@ -588,15 +544,7 @@ test('lookup lease expiry wakes an already waiting worker and ordinary queued lo
   const timedOut = (await (await request(`/api/lookup/${queued.id}`)).json()).job;
   assert.equal(timedOut.status, 'failed');
   assert.match(timedOut.error, /no worker claimed it within 10 s/);
-  const { run } = await (await request('/api/handlers/check', api, { handler: lookupC })).json();
-  t.mock.timers.tick(155000);
-  const check = (await (await request('/api/handlers/check')).json()).run;
-  assert.equal(check.id, run.id);
-  assert.equal(check.finished, null);
-  assert.equal(check.counts.pending, 1);
-  for (const side of ['found', 'not_found']) {
-    assert.equal((await (await request(`/api/lookup/${check.handlers[0][side].job}`)).json()).job.status, 'pending');
-  }
+
 });
 
 test('missing handler directory starts normally with an empty library', async (t) => {
@@ -612,28 +560,23 @@ test('missing handler directory starts normally with an empty library', async (t
   assert.deepEqual(await response.json(), { handlers: [] });
 });
 
-test('a started hub runs the handler check once soon after start, without waiting a whole interval', async () => {
-  // A child process: the test runner's NODE_TEST_CONTEXT turns the schedule off in this one.
+test('startup never schedules handler checks even with legacy settings', async () => {
   const { spawn } = await import('node:child_process');
-  const env = { ...process.env, HANDLER_CHECK_INTERVAL_MS: String(24 * 3_600_000), HANDLER_CHECK_START_DELAY_MS: '100' };
+  const env = { ...process.env, HANDLER_CHECK_INTERVAL_MS: '100', HANDLER_CHECK_START_DELAY_MS: '10' };
   delete env.NODE_TEST_CONTEXT;
   const script = `
     const { start } = await import(${JSON.stringify(new URL('../server.mjs', import.meta.url).href)});
     const s = await start(0);
-    const get = async () => (await (await fetch('http://localhost:' + s.address().port + '/api/handlers/check', { headers: { authorization: 'Bearer ' + process.env.API_KEY } })).json()).run;
-    const before = await get();
-    await new Promise((r) => setTimeout(r, 600));
-    console.log(JSON.stringify({ before, after: await get() }));
-    s.closeAllConnections();
-    s.close();`;
+    await new Promise((r) => setTimeout(r, 400));
+    const res = await fetch('http://localhost:' + s.address().port + '/api/scans?type=site.lookup', { headers: { authorization: 'Bearer ' + process.env.API_KEY } });
+    console.log(JSON.stringify((await res.json()).jobs));
+    s.closeAllConnections(); s.close();`;
   const child = spawn(process.execPath, ['--input-type=module', '-e', script], { env, stdio: ['ignore', 'pipe', 'inherit'] });
   let out = '';
   child.stdout.on('data', (d) => { out += d; });
-  await new Promise((resolve) => child.on('exit', resolve));
-  const { before, after } = JSON.parse(out.trim().split('\n').at(-1));
-  assert.equal(before, null);
-  assert.ok(after?.id, 'no check run 600 ms after start');
-  assert.equal(after.handlers.length, 3);
+  const code = await new Promise((resolve) => child.on('exit', resolve));
+  assert.equal(code, 0);
+  assert.deepEqual(JSON.parse(out.trim().split('\n').at(-1)), []);
 });
 
 test('LinkedIn is gone: no route, and a worker asking for linkedin.scrape gets nothing for it', async () => {

@@ -1,5 +1,5 @@
 // The global handlers (handlers/ALL): offline checks only. No network is used here.
-// The live proof is the server's canary run (POST /api/handlers/check) on a worker PC.
+// Handler metadata is checked without launching lookup jobs.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';

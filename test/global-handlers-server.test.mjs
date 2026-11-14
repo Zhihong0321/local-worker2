@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url';
 
 process.env.API_KEY = 'test-api-key-0123456789';
 process.env.HANDLERS_DIR = fileURLToPath(new URL('../handlers/', import.meta.url));
-process.env.HANDLER_CHECK_INTERVAL_MS = '0';
 const { start } = await import('../server.mjs');
 const server = await start(0);
 const base = `http://localhost:${server.address().port}`;

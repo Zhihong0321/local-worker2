@@ -67,11 +67,6 @@ const ADS_DEFAULT_TIMEOUT_MS = 600_000;
 const ADS_MIN_TIMEOUT_MS = 60_000;
 const ADS_MAX_TIMEOUT_MS = 1_800_000;
 const ADS_LEASE_GRACE_MS = 60_000;
-// Canaries wait behind all earlier checks for their host, without a caller on the line.
-const LOOKUP_CHECK_QUEUE_TIMEOUT_MS = 24 * 3_600_000;
-const HANDLER_CHECK_INTERVAL_MS = Number(process.env.HANDLER_CHECK_INTERVAL_MS ?? 24 * 3_600_000);
-/** Health lives in memory, so every start runs one check this soon, then one each interval. */
-const HANDLER_CHECK_START_DELAY_MS = Number(process.env.HANDLER_CHECK_START_DELAY_MS ?? 60_000);
 const HANDLERS_DIR = path.resolve(process.env.HANDLERS_DIR ?? path.join(import.meta.dirname, 'handlers'));
 /** A pending job no worker claims within this long fails, so a caller never waits forever. */
 const QUEUE_TIMEOUT_MS = Number(process.env.QUEUE_TIMEOUT_MS) || 1_800_000;
@@ -112,7 +107,6 @@ const waiters = [];
 const watchers = new Map();
 const handlers = readHandlers();
 const handlerHealth = new Map();
-let checkRun = null;
 
 const now = () => new Date().toISOString();
 const str = (v) => (typeof v === 'string' ? v : v == null ? '' : String(v));
@@ -145,7 +139,7 @@ function health(id) {
 
 /**
  * `state` null is an ordinary lookup: an answer moves `unknown` to `ok`, a failure is recorded but judges nothing
- * (one slow or refused page is not a broken handler). `broken` stays until a canary passes or a redeploy.
+ * (one slow or refused page is not a broken handler). `broken` stays until a redeploy.
  */
 function markHealth(id, ok, reason, state, at = now()) {
   const previous = health(id);
@@ -184,73 +178,10 @@ function runnable(handler) { return handler.tier === 1 || handler.tier === 2; }
 function updateLookupHealth(job) {
   const answer = job.result?.result;
   const ok = answered(job, answer);
-  // Only layout_changed or a failed canary marks a handler broken; other failures are recorded, not judged.
+  // Only layout changes mark a handler broken; ordinary failures are recorded.
   const broke = job.status === 'done' && answer?.reason === 'layout_changed';
-  const canary = job.check && job.check.run === checkRun?.id;
-  // A canary is judged by its verdict below: an answer with the wrong status or no records is not a last_ok.
-  if (!canary || broke) {
-    markHealth(job.payload.handler, ok, job.error || answer?.reason || (ok ? null : 'invalid handler result'),
-      broke ? 'broken' : null, job.finishedAt);
-  }
-  if (!canary) return;
-  const verdict = checkRun.handlers.find((h) => h.handler === job.payload.handler);
-  const side = job.check.side;
-  const pdf = ok && answer.reason === 'pdf';
-  const passed = ok && (pdf || (answer.status === side && (side !== 'found' || (Array.isArray(answer.records) && answer.records.length > 0))));
-  verdict[side] = {
-    job: job.id, state: passed ? 'ok' : 'broken',
-    reason: passed ? null : job.error || answer?.reason || `expected ${side}${side === 'found' ? ' with at least one record' : ''}; got ${answer?.status ?? 'no status'}`,
-  };
-  const failed = ['found', 'not_found'].filter((s) => verdict[s].state === 'broken');
-  const pending = ['found', 'not_found'].some((s) => verdict[s].state === 'pending');
-  verdict.state = pending ? 'pending' : failed.length ? 'broken' : 'ok';
-  verdict.reason = failed.map((s) => `${s}: ${verdict[s].reason}`).join('; ') || null;
-  // A passing half cannot erase the other half's failure.
-  if (failed.length || !pending) markHealth(verdict.handler, !failed.length, verdict.reason, failed.length ? 'broken' : 'ok', job.finishedAt);
-  summarizeCheck();
-}
-
-function summarizeCheck() {
-  checkRun.counts = { ok: 0, broken: 0, pending: 0 };
-  for (const verdict of checkRun.handlers) checkRun.counts[verdict.state]++;
-  if (!checkRun.counts.pending) checkRun.finished = now();
-}
-
-function startCheck(selected) {
-  checkRun = { id: newId(), started: now(), finished: null, counts: {}, handlers: [] };
-  for (const handler of selected) {
-    const verdict = { handler: handler.id, state: 'pending', reason: null };
-    checkRun.handlers.push(verdict);
-    for (const side of ['found', 'not_found']) {
-      try {
-        const keyword = str(handler.canary?.[side]).trim();
-        if (!keyword || keyword.length > 200) throw new Error('missing or invalid canary keyword');
-        const job = add({ ...lookupPayload(handler, keyword), callerId: 'service:handler-check', taskDescription: 'Handler health check' }, LOOKUP_DEFAULT_TIMEOUT_MS, newId(), LOOKUP);
-        job.check = { run: checkRun.id, side };
-        verdict[side] = { job: job.id, state: 'pending', reason: null };
-        wake(job);
-      } catch (err) {
-        verdict[side] = { job: null, state: 'broken', reason: err.message };
-      }
-    }
-    const failed = ['found', 'not_found'].filter((s) => verdict[s].state === 'broken');
-    if (failed.length) {
-      verdict.reason = failed.map((s) => `${s}: ${verdict[s].reason}`).join('; ');
-      if (!['found', 'not_found'].some((s) => verdict[s].state === 'pending')) verdict.state = 'broken';
-      markHealth(handler.id, false, verdict.reason, 'broken');
-    }
-  }
-  summarizeCheck();
-  return checkRun;
-}
-
-function scheduledCheck() {
-  if (!checkRun || checkRun.finished) startCheck([...handlers.values()].filter(runnable));
-}
-
-if (HANDLER_CHECK_INTERVAL_MS > 0 && !process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') {
-  setTimeout(scheduledCheck, Math.max(0, HANDLER_CHECK_START_DELAY_MS)).unref();
-  setInterval(scheduledCheck, HANDLER_CHECK_INTERVAL_MS).unref();
+  markHealth(job.payload.handler, ok, job.error || answer?.reason || (ok ? null : 'invalid handler result'),
+    broke ? 'broken' : null, job.finishedAt);
 }
 
 function touch(name, ip) {
@@ -334,15 +265,15 @@ function wake(job) {
   }
 }
 
-/** The host is free again: offer its queued lookups, callers' before the canary run's. */
+/** The host is free again: offer its queued lookups. */
 function wakeHost(host) {
   const queued = [...jobs.values()].filter((j) => j.type === LOOKUP && j.status === 'pending' && j.payload.host === host);
-  for (const job of [...queued.filter((j) => !j.check), ...queued.filter((j) => j.check)]) wake(job);
+  for (const job of queued) wake(job);
 }
 
-/** Fetch, audit and lookup callers usually hold the line; canaries can wait their turn. */
+/** Fetch, audit and lookup callers usually hold the line. */
 function queueTimeout(job) {
-  if (job.type === LOOKUP) return job.check ? LOOKUP_CHECK_QUEUE_TIMEOUT_MS : job.timeoutMs;
+  if (job.type === LOOKUP) return job.timeoutMs;
   return job.type === FETCH || job.type === SHOT || job.type === AUDIT ? job.timeoutMs : QUEUE_TIMEOUT_MS;
 }
 
@@ -552,9 +483,8 @@ function waitFor(job, ms, res) {
 }
 
 function take(worker, types, waitMs, res) {
-  // A caller is usually holding the line; the canary run's lookups can wait behind it.
   const list = [...jobs.values()].filter((j) => claimable(j, worker, types));
-  const ready = list.find((j) => !j.check) ?? list[0];
+  const ready = list[0];
   if (ready) return Promise.resolve(lease(ready, worker));
   if (waitMs <= 0) return Promise.resolve(null);
   return new Promise((resolve) => {
@@ -749,19 +679,6 @@ async function route(req, res) {
     const list = [...handlers.values()].filter((h) => (!q.get('country') || h.country === q.get('country'))
       && (!q.get('host') || h.host === q.get('host'))).map((h) => ({ ...h, health: health(h.id) }));
     json(res, 200, { handlers: list });
-    return;
-  }
-
-  if (p === '/api/handlers/check' && method === 'GET') { json(res, 200, { run: checkRun }); return; }
-  if (p === '/api/handlers/check' && method === 'POST') {
-    const body = await readJson(req);
-    if (checkRun && !checkRun.finished) { json(res, 409, { error: 'a handler check is already running' }); return; }
-    const handler = body.handler == null ? null : handlers.get(str(body.handler));
-    if (body.handler != null && !handler) { json(res, 404, { error: 'no such handler' }); return; }
-    if (handler && !runnable(handler)) {
-      json(res, 422, { error: 'handler is not runnable', tier: handler.tier, tier4: handler.tier4, browser_steps: handler.browser_steps }); return;
-    }
-    json(res, 202, { run: startCheck(handler ? [handler] : [...handlers.values()].filter(runnable)) });
     return;
   }
 

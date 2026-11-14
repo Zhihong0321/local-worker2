@@ -67,9 +67,7 @@ source in the job; the worker runs it with its own portable Node 24
 (`%LOCALAPPDATA%\LocalGmapWorker\node`, set up on first start) under
 `--permission` and `--use-system-ca`, one process per job, with an empty
 environment. The hub runs one lookup per host at a time. `GET /api/handlers`
-shows each handler's health; the hub checks every handler's canary keywords
-60 s after it starts (`HANDLER_CHECK_START_DELAY_MS`) and then daily
-(`HANDLER_CHECK_INTERVAL_MS`, `0` turns both off). Full routes on the API page
+shows each handler's health based on completed lookups. Full routes are on the API page
 (`/`, `docs/index.html`).
 
 ## Ads research (`ads.research`)
@@ -116,11 +114,10 @@ its own data folder and lock from `LOCAL_GMAP_WORKER_DATA`, and with that set it
 makes no Startup or desktop shortcut. Run it from a checkout of this repo, not
 from the real worker's folder. PowerShell, from the repo root.
 
-1. Start a local hub (window 1). `HANDLER_CHECK_INTERVAL_MS=0` keeps it from
-   sending every handler's canary to your test worker at start.
+1. Start a local hub (window 1).
 
    ```powershell
-   $env:API_KEY = 'test-api-key-0123456789'; $env:PORT = '18080'; $env:HANDLER_CHECK_INTERVAL_MS = '0'
+   $env:API_KEY = 'test-api-key-0123456789'; $env:PORT = '18080'
    node server.mjs
    ```
 
@@ -141,14 +138,12 @@ from the real worker's folder. PowerShell, from the repo root.
    powershell -NoProfile -ExecutionPolicy Bypass -File worker\worker.ps1
    ```
 
-4. Post a lookup pinned to it (window 3), or check one handler's canaries:
+4. Post a lookup pinned to it (window 3):
 
    ```powershell
    $h = @{ Authorization = 'Bearer test-api-key-0123456789' }
    $body = '{"handler":"MY-lpeph.gov.my/w1","keyword":"CHESTER PROPERTIES SDN BHD","worker":"test-pc"}'
    (Invoke-RestMethod -Method Post http://localhost:18080/api/lookup -Headers $h -ContentType 'application/json' -Body $body).job.result | ConvertTo-Json -Depth 6
-   Invoke-RestMethod -Method Post http://localhost:18080/api/handlers/check -Headers $h -ContentType 'application/json' -Body '{"handler":"MY-apps.span.gov.my/w1"}' | Out-Null
-   (Invoke-RestMethod http://localhost:18080/api/handlers/check -Headers $h).run.handlers | ConvertTo-Json -Depth 4
    ```
 
 5. Stop with Ctrl+C in windows 1 and 2, then

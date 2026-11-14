@@ -60,7 +60,6 @@ const fakeUrl = `http://localhost:${fake.address().port}`;
 
 process.env.API_KEY = 'test-api-key-0123456789';
 process.env.HANDLERS_DIR = fileURLToPath(new URL('./fixtures/handlers/', import.meta.url));
-process.env.HANDLER_CHECK_INTERVAL_MS = '0';
 process.env.AGY_URL = fakeUrl;
 process.env.AGY_TOKEN = 'agy-test';
 process.env.AGY_ACCOUNTS = 'acct-a,acct-b';
