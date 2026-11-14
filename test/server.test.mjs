@@ -686,6 +686,19 @@ test('chat bridge disconnect before delivery requeues the job for another worker
   assert.equal(answer.result.answer, 'ready');
 });
 
+test('worker reports connected chat browsers to the hub', async () => {
+  const browsers = encodeURIComponent(JSON.stringify(['Chrome', 'Brave']));
+  await call(`/api/jobs/next?worker=browser-status&types=chat.ask&wait=0&chatBrowsers=${browsers}`, wk);
+  let worker = (await (await call('/api/workers', api)).json()).workers.find((w) => w.name === 'browser-status');
+  assert.deepEqual(worker.chatBrowsers, ['Chrome', 'Brave']);
+  await call('/api/jobs/heartbeat', wk, { method: 'POST', body: JSON.stringify({ worker: 'browser-status', chatBrowsers: ['Brave'] }) });
+  worker = (await (await call('/api/workers', api)).json()).workers.find((w) => w.name === 'browser-status');
+  assert.deepEqual(worker.chatBrowsers, ['Brave']);
+  await call('/api/jobs/heartbeat', wk, { method: 'POST', body: JSON.stringify({ worker: 'browser-status', chatBrowsers: null }) });
+  worker = (await (await call('/api/workers', api)).json()).workers.find((w) => w.name === 'browser-status');
+  assert.equal(worker.chatBrowsers, null);
+});
+
 
 test('job metadata is mandatory and clearing cancels active jobs', async () => {
   const post = (body) => fetch(base + '/api/scan', { method: 'POST', headers: api, body: JSON.stringify(body) });

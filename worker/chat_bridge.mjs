@@ -8,7 +8,8 @@ import crypto from 'node:crypto';
 const PORT = Number(process.env.CHAT_BRIDGE_PORT) || 8765;
 const HOST = '127.0.0.1';
 
-let activeWsClient = null;
+const clients = new Set();
+let nextClient = 0;
 const answerWaiters = new Map();
 
 function sendJson(res, status, data) {
@@ -53,7 +54,8 @@ const server = http.createServer(async (req, res) => {
 
   // Status check
   if (method === 'GET' && (pathname === '/health' || pathname === '/status')) {
-    sendJson(res, 200, { ok: true, connected: !!activeWsClient });
+    sendJson(res, 200, { ok: true, connected: clients.size > 0,
+      browsers: [...clients].map((client) => ({ id: client.id || null, name: client.name || 'Unknown browser' })) });
     return;
   }
 
@@ -69,13 +71,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (!activeWsClient) {
+    if (!clients.size) {
       sendJson(res, 503, { ok: false, error: 'no active ChatGPT tab connected to local worker on https://chatgpt.com' });
       return;
     }
 
+    const connected = [...clients];
+    const client = connected[nextClient++ % connected.length];
     const task = { id, action: 'prompt', prompt };
-    activeWsClient.send(task);
 
     const answer = await new Promise((resolve) => {
       let timer;
@@ -89,7 +92,8 @@ const server = http.createServer(async (req, res) => {
         resolve({ ok: false, error: `ChatGPT web timed out after ${Math.round(timeoutMs / 1000)} s` });
       }, timeoutMs);
 
-      answerWaiters.set(id, onAnswer);
+      answerWaiters.set(id, { client, onAnswer });
+      client.send(task);
     });
 
     sendJson(res, answer.ok ? 200 : 500, answer);
@@ -149,7 +153,7 @@ server.on('upgrade', (req, socket) => {
     },
   };
 
-  activeWsClient = client;
+  clients.add(client);
   console.log('[Bridge] ChatGPT browser tab CONNECTED via WebSocket.');
 
   socket.on('data', (chunk) => {
@@ -192,7 +196,7 @@ server.on('upgrade', (req, socket) => {
 
       if (opcode === 0x08) { // Close
         socket.destroy();
-        if (activeWsClient === client) activeWsClient = null;
+        clients.delete(client);
         return;
       }
       if (opcode === 0x09) { // Ping
@@ -203,11 +207,15 @@ server.on('upgrade', (req, socket) => {
         const str = payload.toString('utf8');
         try {
           const msg = JSON.parse(str);
+          if (msg.type === 'hello') {
+            client.id = String(msg.id || '').slice(0, 100);
+            client.name = String(msg.name || 'Unknown browser').slice(0, 40);
+          }
           if (msg.type === 'done' || msg.type === 'error') {
             const waiter = answerWaiters.get(msg.id);
-            if (waiter) {
+            if (waiter && waiter.client === client) {
               answerWaiters.delete(msg.id);
-              waiter(msg);
+              waiter.onAnswer(msg);
             }
           }
         } catch { }
@@ -216,15 +224,12 @@ server.on('upgrade', (req, socket) => {
   });
 
   socket.on('close', () => {
-    if (activeWsClient === client) {
-      activeWsClient = null;
+    if (clients.delete(client)) {
       console.log('[Bridge] ChatGPT browser tab disconnected.');
     }
   });
   socket.on('error', () => {
-    if (activeWsClient === client) {
-      activeWsClient = null;
-    }
+    clients.delete(client);
   });
 });
 

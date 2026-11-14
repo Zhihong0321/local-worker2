@@ -237,7 +237,7 @@ $script:LastBeat = Get-Date
 function Send-Beat {
   if (((Get-Date) - $script:LastBeat).TotalSeconds -lt 30) { return }
   $script:LastBeat = Get-Date
-  try { [void](Invoke-Hub 'POST' '/api/jobs/heartbeat' @{ worker = $Name; types = @($script:Types.Split(',')); jobId = $script:JobId } 20) } catch { }
+  try { [void](Invoke-Hub 'POST' '/api/jobs/heartbeat' @{ worker = $Name; types = @($script:Types.Split(',')); jobId = $script:JobId; chatBrowsers = (Get-ChatBrowsers) } 20) } catch { }
 }
 
 # ------------------------------------------------------------- google maps
@@ -823,6 +823,24 @@ function Start-ChatBridge {
   } catch { }
 }
 
+# True when a ChatGPT browser is connected. Without one, this PC must not take chat.ask:
+# a job taken with no tab fails at once and the question waits out its timeout.
+function Test-ChatTab {
+  try {
+    $h = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/health' -TimeoutSec 2
+    return [bool]$h.connected
+  } catch { return $false }
+}
+
+# Names of browser connections, or null when the bridge cannot report them.
+function Get-ChatBrowsers {
+  try {
+    $h = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/health' -TimeoutSec 2
+    if ($null -eq $h.browsers) { return $null }
+    return ,@($h.browsers | ForEach-Object { [string]$_.name })
+  } catch { return $null }
+}
+
 # One chat.ask job, by chat.mjs on the portable Node, with the payload in a file.
 function Invoke-Chat($Job) {
   $p = $Job.payload
@@ -982,11 +1000,13 @@ while ($true) {
       if ($script:FetchReady) { 'site.audit' }
       if ($script:NodeReady) { 'site.lookup' }
       if ($script:NodeReady -and $script:ShotExe) { 'web.shot' }
-      if ($script:NodeReady) { 'chat.ask' }
+      if ($script:NodeReady -and (Test-ChatTab)) { 'chat.ask' }
       if ($script:NodeReady) { 'ads.research' }
     )) -join ','
     if (-not $script:Types) { Start-Sleep -Seconds ([Math]::Min(25, [Math]::Max(1, [int]($restUntil - (Get-Date)).TotalSeconds))); continue }
-    $r = Invoke-Hub 'GET' ("/api/jobs/next?worker=$([uri]::EscapeDataString($Name))&types=$($script:Types)&wait=25") $null 45
+    $chatBrowsers = Get-ChatBrowsers
+    $chatQuery = '&chatBrowsers=' + [uri]::EscapeDataString((ConvertTo-Json -InputObject $chatBrowsers -Compress))
+    $r = Invoke-Hub 'GET' ("/api/jobs/next?worker=$([uri]::EscapeDataString($Name))&types=$($script:Types)&wait=25$chatQuery") $null 45
     if ($r.status -eq 204) { $backoff = 5; continue }
     if ($r.status -eq 401 -or $r.status -eq 403) {
       Log "the service refused this worker's key (HTTP $($r.status)). Its API_KEY was probably rotated; download the package again (GET /api/worker/package). Retrying in 10 minutes."

@@ -305,7 +305,7 @@ def send_beat():
         return
     LastBeat = time.monotonic()
     try:
-        invoke_hub('POST', '/api/jobs/heartbeat', {'worker': Name, 'types': Types.split(','), 'jobId': JobId}, 20)
+        invoke_hub('POST', '/api/jobs/heartbeat', {'worker': Name, 'types': Types.split(','), 'jobId': JobId, 'chatBrowsers': get_chat_browsers()}, 20)
     except Exception:
         pass
 
@@ -918,6 +918,27 @@ def start_chat_bridge():
         pass
 
 
+def chat_tab():
+    """True when a ChatGPT browser is connected. A Mac with no tab must not take chat.ask."""
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=2) as res:
+            body = json.loads(res.read().decode('utf-8', 'replace') or '{}')
+        return bool(body.get('connected'))
+    except (OSError, ValueError):
+        return False
+
+
+# Names of browser connections, or None when the bridge cannot report them.
+def get_chat_browsers():
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=2) as res:
+            body = json.loads(res.read().decode('utf-8', 'replace') or '{}')
+        browsers = body.get('browsers')
+        return [str(b.get('name', 'Unknown browser')) for b in browsers] if isinstance(browsers, list) else None
+    except (OSError, ValueError):
+        return None
+
+
 # One chat.ask job, by chat.mjs on the portable Node, with the payload in a file.
 def invoke_chat(job):
     p = job.get('payload') or {}
@@ -1054,13 +1075,15 @@ def main():
                 'site.audit' if FetchReady else None,
                 'site.lookup' if NodeReady else None,
                 'web.shot' if NodeReady and ShotExe else None,
-                'chat.ask' if NodeReady else None,
+                'chat.ask' if NodeReady and chat_tab() else None,
                 'ads.research' if NodeReady else None,
             ) if t)
             if not Types:
                 time.sleep(min(25, max(1, int(rest_until - time.time()))))
                 continue
-            r = invoke_hub('GET', f"/api/jobs/next?worker={urllib.parse.quote(Name, safe='')}&types={Types}&wait=25", None, 45)
+            browsers = get_chat_browsers()
+            chat_query = '&chatBrowsers=' + urllib.parse.quote(json.dumps(browsers), safe='')
+            r = invoke_hub('GET', f"/api/jobs/next?worker={urllib.parse.quote(Name, safe='')}&types={Types}&wait=25{chat_query}", None, 45)
             if r.status == 204:
                 backoff = 5
                 continue

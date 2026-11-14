@@ -3,6 +3,14 @@ const WS_URL = 'ws://127.0.0.1:8765';
 let socket = null;
 let isConnected = false;
 let isBusy = false;
+const connectionId = crypto.randomUUID();
+
+async function browserName() {
+  if (navigator.brave && await navigator.brave.isBrave()) return 'Brave';
+  if (navigator.userAgent.includes('Edg/')) return 'Edge';
+  if (navigator.userAgent.includes('OPR/')) return 'Opera';
+  return 'Chrome';
+}
 
 function setBadge(text, color) {
   try {
@@ -40,7 +48,18 @@ function connectWebSocket() {
     socket.onopen = () => {
       console.log('[Bridge BG] Connected to Local Worker on ' + WS_URL);
       isConnected = true;
+      const openSocket = socket;
+      browserName().then((name) => {
+        if (openSocket.readyState === WebSocket.OPEN) openSocket.send(JSON.stringify({ type: 'hello', id: connectionId, name }));
+      });
       updateStatusBadge();
+      // Chrome stops an idle extension service worker after 30 s, which closes this socket and leaves the worker
+      // with "no active ChatGPT tab". A message over the socket every 20 s keeps it running (Chrome 116+).
+      const open = socket;
+      const keepAlive = setInterval(() => {
+        if (open.readyState !== WebSocket.OPEN) { clearInterval(keepAlive); return; }
+        try { open.send('keepalive'); } catch { clearInterval(keepAlive); }
+      }, 20000);
     };
 
     socket.onclose = () => {
@@ -141,6 +160,10 @@ async function handleIncomingTask(task) {
 
 // Keep service worker alive via events and ping from content script
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.action === 'bridgeStatus') {
+    browserName().then((name) => sendResponse({ connected: isConnected, id: connectionId, name }));
+    return true;
+  }
   if (msg.action === 'ping') {
     if (!isConnected) connectWebSocket();
     sendResponse({ ok: true, connected: isConnected });

@@ -618,6 +618,7 @@ function liveWorkers() {
   return [...workers.values()].map((w) => ({
     ...w,
     live: t - Date.parse(w.lastSeen) < WORKER_LIVE_MS,
+    chatBrowsers: t - Date.parse(w.lastSeen) < WORKER_LIVE_MS ? (w.chatBrowsers ?? null) : null,
     coolUntil: w.coolUntil > t ? new Date(w.coolUntil).toISOString() : null,
     coolReason: w.coolUntil > t ? w.coolReason : null,
     job: [...jobs.values()].find((j) => j.status === 'running' && j.worker === w.name)?.id ?? null,
@@ -655,6 +656,9 @@ async function route(req, res) {
     if (!types.length) { res.writeHead(204).end(); return; }
     const w = touch(worker, callerIp(req));
     w.types = types;
+    if (q.has('chatBrowsers')) {
+      try { const browsers = JSON.parse(q.get('chatBrowsers')); if (browsers === null) w.chatBrowsers = null; else if (Array.isArray(browsers)) w.chatBrowsers = browsers.filter((b) => typeof b === 'string').map((b) => b.slice(0, 40)).slice(0, 20); } catch { }
+    }
     const waitSec = Number(q.get('wait'));
     const waitMs = Math.min(MAX_WAIT_MS, Math.max(0, Number.isFinite(waitSec) ? waitSec * 1000 : MAX_WAIT_MS));
     // A worker Google is resting gets no scans, but still fetches pages.
@@ -676,7 +680,9 @@ async function route(req, res) {
     const body = await readJson(req);
     const worker = str(body.worker).trim();
     if (!worker) { json(res, 400, { error: 'worker is required' }); return; }
-    touch(worker, callerIp(req));
+    const w = touch(worker, callerIp(req));
+    if (body.chatBrowsers === null) w.chatBrowsers = null;
+    if (Array.isArray(body.chatBrowsers)) w.chatBrowsers = body.chatBrowsers.filter((b) => typeof b === 'string').map((b) => b.slice(0, 40)).slice(0, 20);
     json(res, 200, { ok: true });
     return;
   }

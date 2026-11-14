@@ -2,6 +2,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   const bridgeEl = document.getElementById('bridge-status');
   const tabEl = document.getElementById('tab-status');
   const openBtn = document.getElementById('btn-open-chatgpt');
+  const browserEl = document.getElementById('browser-name');
+  const browsersEl = document.getElementById('browsers');
+  let ownStatus;
+  try {
+    ownStatus = await chrome.runtime.sendMessage({ action: 'bridgeStatus' });
+    browserEl.textContent = ownStatus.name;
+  } catch {
+    browserEl.textContent = 'Unknown';
+  }
 
   // Check ChatGPT Tab
   const tabs = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
@@ -18,8 +27,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const res = await fetch('http://127.0.0.1:8765/status', { signal: AbortSignal.timeout(1500) });
     if (res.ok) {
       const data = await res.json();
-      bridgeEl.innerText = 'Connected';
-      bridgeEl.className = 'pill pill-green';
+      const connectedHere = ownStatus?.connected && data.browsers?.some((browser) => browser.id === ownStatus.id);
+      bridgeEl.innerText = connectedHere ? 'Connected' : 'Not connected';
+      bridgeEl.className = connectedHere ? 'pill pill-green' : 'pill pill-red';
+      browsersEl.textContent = data.browsers?.map((browser) => browser.name).join(', ') || 'None';
     } else {
       bridgeEl.innerText = 'Offline';
       bridgeEl.className = 'pill pill-red';
@@ -27,6 +38,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   } catch (err) {
     bridgeEl.innerText = 'Offline';
     bridgeEl.className = 'pill pill-red';
+    browsersEl.textContent = 'Unavailable';
   }
 
   openBtn.addEventListener('click', () => {
